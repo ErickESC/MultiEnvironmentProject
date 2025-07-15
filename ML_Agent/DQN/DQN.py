@@ -212,6 +212,7 @@ class DQN():
         print("hi")
         torch.save(self.policy_net.state_dict(), f"CarSnake{num}.pt")
     def act(self,state):
+        """Simple act fuction using epislon-greedy or epsilon-decay policy."""
         rand = np.random.rand()
         if rand <= self.epsilon:
             action = np.random.randint(0,self.action_space)
@@ -221,12 +222,14 @@ class DQN():
                 action = action.argmax().item()
         return action
     def noisy_act(self,state):
+        """Noisy act function for DQN agent."""
         self.policy_net.reset_noise()
         with torch.no_grad():
             action = self.policy_net(state)
             action = action.argmax().item()
         return action
     def cnn_act(self,state):
+        """Simple act fuction for CNN-DQN using epislon-greedy or epsilon-decay policy."""
         rand = np.random.rand()
         if rand <= self.epsilon:
             action = np.random.randint(0,self.action_space)
@@ -237,6 +240,7 @@ class DQN():
                 action = action.argmax().item()
         return action
     def noisy_cnn_act(self,state):
+        """Noisy act function for CNN-DQN agent."""
         image, vector = state
         with torch.no_grad():
             self.policy_net.reset_noise()
@@ -245,6 +249,7 @@ class DQN():
         return action
     
     def optimize(self,mini_batch):
+        """Optimize the base DQN agent using a mini-batch from the replay memory."""
         transitions = mini_batch
         batch = Transition(*zip(*transitions))
         non_final_mask = torch.tensor(tuple(map(lambda s: s is not None,
@@ -267,6 +272,7 @@ class DQN():
         self.optimizer.step()
 
     def cnn_optimize_double(self, mini_batch):
+        """Optimization function for CNN-DQN agent using double DQN."""
         transitions = mini_batch
         batch = Transition(*zip(*transitions))
         state_imgs = torch.stack([s[0] for s in batch.state]).to(device)
@@ -307,6 +313,7 @@ class DQN():
 
 
     def optimize_double(self,mini_batch):
+        """Optimization function for DQN agent using double DQN, using priority replay and noisy DQN."""
         self.policy_net.reset_noise()
         self.target_net.reset_noise()
         state_batch = mini_batch[0].to(device)
@@ -332,6 +339,7 @@ class DQN():
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), 20.0)
         self.optimizer.step()
+        #calculate TD-errors for priority replay
         td_errors = td_errors.detach().squeeze()
         if td_errors.ndim > 1:
             td_errors = td_errors.squeeze(1)
@@ -339,6 +347,7 @@ class DQN():
         self.memory.update_priorities(indexes, td_errors)
 
     def train(self, episodes, environment: UE):
+        """Training loop for non-CNN DQN agent."""
         behaviour_name = list(environment.behavior_specs)[0]
         self.policy_net.train()
         self.target_net.train()
@@ -359,16 +368,13 @@ class DQN():
                     math.exp(-1. * self.steps / self.epsilon_decay_rate)
                 self.steps += 1
                 
-                #self.policy_net.reset_noise()
                 action = self.noisy_act(state)
                 unity_action = ActionTuple(discrete=np.array([[action]], dtype=np.int32))
                 environment.set_action_for_agent(behaviour_name, tracked_agent, unity_action)
 
                 environment.step()
                 decision_steps, terminal_steps = environment.get_steps(behaviour_name)
-
-                action_tensor = torch.tensor([[action]], dtype=torch.int64, device=device)
-
+                #check if agent is terminated
                 if tracked_agent in terminal_steps:
                     reward = terminal_steps[0].reward
                     new_state = self.from_numpy(decision_steps[0].obs).to(device)
@@ -379,7 +385,7 @@ class DQN():
                     
                     self.memory.push(state, int(action), new_state, float(reward),0)
                     state = new_state
-
+                #execute optimizaiton
                 if self.steps % self.update_rate == 0:
                     if len(self.memory) > 1000:
                         mini_batch = self.memory.sample()
@@ -388,15 +394,10 @@ class DQN():
                         else:
                             self.optimize(mini_batch)
 
-                    # Soft update
-                    #target_net_state_dict = self.target_net.state_dict()
-                    #policy_net_state_dict = self.policy_net.state_dict()
-                    #for key in policy_net_state_dict:
-                    #    target_net_state_dict[key] = policy_net_state_dict[key] * self.tau + target_net_state_dict[key] * (1 - self.tau)
-                    #self.target_net.load_state_dict(target_net_state_dict)
                 if reward > 0:
                     total_rewards += 1
 
+                #update target network every 100000 steps
                 if self.steps % 100000 == 0:
                     self.update_count += 1
                     self.target_net.load_state_dict(self.policy_net.state_dict())
@@ -406,6 +407,7 @@ class DQN():
                 j += 1
             print(f"Episode: {i}, Total Rewards: {total_rewards}, Total Updates:{self.update_count}")
     def cnn_train(self, episodes, environment: UE):
+        """Training loop for CNN DQN agent. (Old version, doesn't work)"""
         behaviour_name = list(environment.behavior_specs)[0]
         self.policy_net.train()
         self.target_net.train()
@@ -457,14 +459,6 @@ class DQN():
                             self.cnn_optimize_double(mini_batch)
                         else:
                             self.optimize(mini_batch)
-
-                    ## Soft update
-                    #target_net_state_dict = self.target_net.state_dict()
-                    #policy_net_state_dict = self.policy_net.state_dict()
-                    #for key in policy_net_state_dict:
-                    #    target_net_state_dict[key] = policy_net_state_dict[key] * self.tau + target_net_state_dict[key] * (1 - self.tau)
-                    #self.target_net.load_state_dict(target_net_state_dict)
-                
                 total_rewards += reward
 
                 if self.steps % 10000 == 0:
@@ -475,6 +469,7 @@ class DQN():
             print(f"Episode: {i}, Total Rewards: {total_rewards}")
             #time.sleep(0.1)
     def test(self, episodes, environment: UE):
+        """Testing loop for DQN agent."""
         behaviour_name = list(environment.behavior_specs)[0]
         self.policy_net.eval()
         self.target_net.eval()
@@ -501,6 +496,7 @@ class DQN():
                     state = new_state
 
     def from_numpy(self,state) -> torch.Tensor:
+        """Convert numpy state to torch tensor."""
         if len(state) > 1:
             np_state = state[0]
             np_state = np.append(np_state,state[1])
@@ -512,6 +508,7 @@ class DQN():
         return input_tensor
     
     def cnn_from_numpy(self,state) -> torch.Tensor:
+        """Convert numpy state to torch tensor for CNN-DQN."""
         state = np.reshape(state, (1,70))
 
         input_tensor = torch.from_numpy(state).float()
@@ -533,28 +530,19 @@ try:
         time_scale=200,             # Run faster than real time
         target_frame_rate=-1         # Unlimited frame rate
     )
+    #create the environment
     env = UE(file_name="Games/CarSnake200Speed/Racing Game.exe", no_graphics=True, side_channels=[engine_configuration_channel],timeout_wait=60)
+    # Start the environment (this will launch the Unity executable, must be run)
     env.reset()
-
-    #print(env.behavior_specs)
-    #print("\n")
+    #check behavior specs
     behaviour_name = list(env.behavior_specs)[0]
-    #print(behaviour_name)
-    #print("\n")
     spec = env.behavior_specs[behaviour_name]
-    #print(spec)
-    #print("\n")
     print(spec.action_spec)
     print(spec.action_spec[1][0])
     print(spec.observation_specs)
+    #create the DQN agent
     agent = DQN(action_space=spec.action_spec[1][0], state_space=808, continue_learning=False, input_model="CarSnake3.pt", double_DQN=True, CNN=False)
     agent.train(episodes=500000, environment=env)
-    #agent.policy_net.train()  # noise only works in train() mode
-    #for i in range(5):
-    #    agent.policy_net.reset_noise()  # regenerate noise
-    #    dummy_input = torch.randn(1, agent.state_space).to(device)
-    #    output = agent.policy_net(dummy_input)
-    #    print(output)
 except KeyboardInterrupt:
     try:
         agent.save_model(0)
