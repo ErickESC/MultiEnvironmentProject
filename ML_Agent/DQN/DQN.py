@@ -479,7 +479,7 @@ class DQN():
         self.policy_net.eval()
         self.target_net.eval()
 
-        for i in range(episodes):
+        for _ in range(episodes):
             environment.reset()
             decision_steps, terminal_steps = environment.get_steps(behaviour_name)
             
