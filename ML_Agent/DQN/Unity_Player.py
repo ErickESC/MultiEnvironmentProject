@@ -11,18 +11,18 @@ def add_to_csv(data, filename):
     df.to_csv(filename, mode='a', header=False, index=False)
 
 # Path to Unity environment and ONNX model
-UNITY_ENV_PATH = "Games/3DBallVisual/UnityEnvironment.exe"
-ONNX_MODEL_PATH = "MultiEnvironmentProject/ML_Agent/Models/ONNX/Visual3DBall.onnx"
+UNITY_ENV_PATH = "Games/Crawler/UnityEnvironment.exe"
+ONNX_MODEL_PATH = "MultiEnvironmentProject/ML_Agent/Models/ONNX/Crawler.onnx"
 try:
     engine_configuration_channel = EngineConfigurationChannel()
 
     # Set parameters BEFORE launching the environment
     engine_configuration_channel.set_configuration_parameters(
-        time_scale=1,             # Run faster than real time
+        time_scale=1000,             # Run faster than real time
         target_frame_rate=60         # Unlimited frame rate
     )
     # Start Unity environment
-    env = UnityEnvironment(file_name=UNITY_ENV_PATH, seed=1, side_channels=[engine_configuration_channel],no_graphics=False)
+    env = UnityEnvironment(file_name=UNITY_ENV_PATH, seed=1, side_channels=[engine_configuration_channel],no_graphics=True)
     env.reset()
 
     # Load ONNX model
