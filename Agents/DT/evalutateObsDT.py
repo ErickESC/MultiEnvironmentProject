@@ -19,7 +19,7 @@ from trainObsDT import plot_metrics
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- 5. Evaluation (Online Rollout) ---
+# --- Evaluation (Online Rollout) ---
 def evaluate_online(env_creator, model_path, target_rtg, num_episodes=10):
     """Evaluates the trained model online in the environment."""
 
@@ -337,16 +337,19 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # --- Main Execution ---
 if __name__ == "__main__":
 
-    weight = 1
-    
-    reward_type = 'arousal'
+    # reward_type = 'arousal'
     # reward_type = 'score'
-    # reward_type = 'blended'
+    reward_type = 'blended'
     
     data_from = 'PPO'
     # data_from = 'Explore'
     
-    target_return = 7 # Target return for evaluation
+    target_return = 17 # Target return for evaluation
+    
+    # name = f"{data_from}_{label}_{reward_type}_SolidObs_DT"
+    name = f"ODT_Optimize_v100"
+    
+    weight = 0
 
     if weight == 0:
         label = 'Optimize'
@@ -359,38 +362,35 @@ if __name__ == "__main__":
     
     if data_from == 'Explore':
         discretize=True
-
+    
+    # Set the path to the saved model artifacts
+    final_model_path = f"examples\\Agents\\DT\\Results\\fineTuned\\{name}"
+    # final_model_path = f"examples\\Agents\\DT\\Results\\Explore_Blended_moreTrained_DT"
+    
+    print(f'Starting to evaluate {name}')
+    
     def create_env():
-        env = SolidEnvironmentGameObs(0, graphics=True, weight=weight, logging=False, path="Builds\\MS_Solid\\racing.exe", discretize=discretize)
+        env = SolidEnvironmentGameObs(0, graphics=False, weight=weight, logging=False, path="Builds\\MS_Solid\\racing.exe", discretize=discretize)
         sideChannel = env.customSideChannel
         env.targetSignal = np.ones
         return env
 
-    name = f"{data_from}_{label}_{reward_type}_SolidObs_DT"
-    # name = f"Mauricio"
-    
-    # Set the path to the saved model artifacts
-    final_model_path = f"examples\\Agents\\DT\\Results\\preTrained\\{name}_final"
-    # final_model_path = f"examples\\Agents\\DT\\Results\\Explore_Blended_moreTrained_DT"
-    
-    print(f'Starting to evaluate {name}')
-
-    # # Run evaluation
-    # mean_return, std_return, arousal, scores = evaluate_online(
-    #     env_creator=create_env,
-    #     model_path=final_model_path,
-    #     target_rtg=target_return,
-    #     num_episodes=10
-    # )
-    
-    # print(f"Best Score: {compute_confidence_interval(scores)}, Mean Arousal: {compute_confidence_interval(arousal)}")
-    # print(f'Done evaluating {name}')
-    
-    # --- Record a GIF of one episode ---
-    record_gif_episode(
+    # Run evaluation
+    mean_return, std_return, arousal, scores = evaluate_online(
         env_creator=create_env,
         model_path=final_model_path,
         target_rtg=target_return,
-        gif_path=f"examples\\Agents\\DT\\GIF\{data_from}_{label}.gif",
-        max_frames=200
+        num_episodes=30
     )
+    
+    print(f"Best Score: {compute_confidence_interval(scores)}, Mean Arousal: {compute_confidence_interval(arousal)}")
+    print(f'Done evaluating {name}')
+    
+    # --- Record a GIF of one episode ---
+    # record_gif_episode(
+    #     env_creator=create_env,
+    #     model_path=final_model_path,
+    #     target_rtg=target_return,
+    #     gif_path=f"examples\\Agents\\DT\\GIF\{data_from}_{label}.gif",
+    #     max_frames=200
+    # )

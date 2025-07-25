@@ -5,7 +5,7 @@ from torch.utils.data import Dataset as TorchDataset, DataLoader
 from transformers import (
     DecisionTransformerConfig,
     DecisionTransformerModel,
-    Trainer, # We can reuse the Trainer
+    Trainer,
     TrainingArguments,
 )
 import numpy as np
@@ -37,12 +37,6 @@ logger = logging.getLogger(__name__)
 #     DecisionTransformerDataset, DecisionTransformerDataCollator,
 #     MultiDiscreteDecisionTransformerTrainer
 # )
-
-# --- Copied/Adapted Data Processing & Trainer from previous script ---
-# (Include the definitions of load_your_data, calculate_returns_to_go,
-#  process_dataset, DecisionTransformerDataset, DecisionTransformerDataCollator,
-#  and MultiDiscreteDecisionTransformerTrainer here if not imported)
-# For this example, I will paste them here to make the script self-contained.
 
 def calculate_returns_to_go(episode_rewards_list):
     """Calculates returns-to-go for a single episode's rewards list."""
@@ -126,7 +120,7 @@ def process_dataset_for_finetuning(episodes, context_length, state_mean, state_s
     return all_sequences
 
 
-class DecisionTransformerDataset(TorchDataset): # (Same as before)
+class DecisionTransformerDataset(TorchDataset):
     def __init__(self, sequences):
         self.sequences = sequences
     def __len__(self):
@@ -143,7 +137,7 @@ class DecisionTransformerDataset(TorchDataset): # (Same as before)
         }
 
 @dataclass
-class DecisionTransformerDataCollator: # (Same as before)
+class DecisionTransformerDataCollator:
     def __call__(self, features):
         batch = {}
         batch["states"] = torch.stack([f["states"] for f in features])
@@ -154,7 +148,7 @@ class DecisionTransformerDataCollator: # (Same as before)
         batch["targets"] = torch.stack([f["targets"] for f in features])
         return batch
 
-class MultiDiscreteDecisionTransformerTrainer(Trainer): # (Same as before)
+class MultiDiscreteDecisionTransformerTrainer(Trainer):
     def __init__(self, *, num_actions_per_dim=None, **kwargs):
         super().__init__(**kwargs)
         if num_actions_per_dim is None:
@@ -254,8 +248,6 @@ class MultiDiscreteDecisionTransformerTrainer(Trainer): # (Same as before)
         if labels is not None: labels = labels.detach()
         return (loss, logits, labels)
 
-# --- End Copied/Adapted ---
-
 
 def collect_online_data(env_creator, model, model_path_for_stats, target_rtg, num_episodes):
     """Collects data by rolling out the current model in the environment."""
@@ -265,8 +257,6 @@ def collect_online_data(env_creator, model, model_path_for_stats, target_rtg, nu
     stats = np.load(os.path.join(model_path_for_stats, "normalization_stats.npz"))
     state_mean = stats['mean']
     state_std = stats['std']
-    # Model's max_ep_len is crucial for timestep embeddings, make sure it's loaded correctly
-    # This refers to the max_ep_len the model was trained with, not necessarily of new episodes
     model_max_ep_len = int(stats['max_ep_len'])
 
     _num_actions_per_dim = NUM_ACTIONS_PER_DIM # Global
@@ -378,13 +368,12 @@ def collect_online_data(env_creator, model, model_path_for_stats, target_rtg, nu
 
 
 def main_finetune():
-    # --- Create Environment (Replace with your actual environment setup) ---
+    # --- Create Environment ---
     def create_env():
         env = SolidEnvironmentGameObs(0, graphics=False, weight=WEIGHT, logging=False, path="Builds\\MS_Solid\\racing.exe", discretize=False)
         sideChannel = env.customSideChannel
         env.targetSignal = np.ones
         return env
-    # --- End Environment Creation ---
 
     # 1. Load Pre-trained Model and Config
     logger.info(f"Loading pre-trained model from: {PRETRAINED_MODEL_PATH}")
@@ -463,8 +452,8 @@ def main_finetune():
     eval_dataset = None # Or create a small eval split from new_sequences
 
     # 4. Fine-tune the Model
-    finetuned_model_output_dir = os.path.join(OUTPUT_DIR_BASE, f"{FINETUNED_MODEL_NAME_BASE}-{timestamp}")
-    finetuned_logs_dir = os.path.join(LOGS_DIR_BASE, f"{FINETUNED_MODEL_NAME_BASE}-{timestamp}")
+    finetuned_model_output_dir = os.path.join(OUTPUT_DIR_BASE, f"{FINETUNED_MODEL_NAME_BASE}_{NEW_VERSION}_{timestamp}")
+    finetuned_logs_dir = os.path.join(LOGS_DIR_BASE, f"{FINETUNED_MODEL_NAME_BASE}_{NEW_VERSION}_{timestamp}")
 
     training_args = TrainingArguments(
         output_dir=finetuned_model_output_dir,
@@ -476,11 +465,11 @@ def main_finetune():
         warmup_ratio=0.1,  # Keep or adjust
         logging_dir=finetuned_logs_dir,
         logging_steps=max(1, len(train_dataset) // (FINETUNE_BATCH_SIZE * 5)), # Log ~5 times per epoch
-        save_strategy="epoch", # Save at the end of each fine-tuning epoch
+        save_strategy="steps", # Save at the end of each fine-tuning epoch
         # evaluation_strategy="no" if eval_dataset is None else "epoch",
         # load_best_model_at_end=False if eval_dataset is None else True,
         # metric_for_best_model="eval_loss" if eval_dataset else None, # Needs eval_loss if used
-        evaluation_strategy="no", # Simpler for pure fine-tuning example
+        # evaluation_strategy="steps", # Simpler for pure fine-tuning example
         load_best_model_at_end=False,
         remove_unused_columns=False,
     )
@@ -506,8 +495,9 @@ def main_finetune():
     logger.info("Starting fine-tuning...")
     trainer.train()
 
-    # 5. Save Fine-tuned Model and its Normalization Stats (which are the same as pre-trained)
-    final_finetuned_model_path = os.path.join("examples", "Agents", "DT", "Results", "fineTuned", f"{FINETUNED_MODEL_NAME_BASE}-final-{timestamp}")
+    # 5. Save Fine-tuned Model and its Normalization Stats
+    # final_finetuned_model_path = os.path.join("examples", "Agents", "DT", "Results", "fineTuned", f"{FINETUNED_MODEL_NAME_BASE}-{timestamp}")
+    final_finetuned_model_path = os.path.join("examples", "Agents", "DT", "Results", "fineTuned", f"{FINETUNED_MODEL_NAME_BASE}_{NEW_VERSION}")
     # os.makedirs(final_finetuned_model_path, exist_ok=True)
     trainer.save_model(final_finetuned_model_path)
     # Save the *original* normalization stats, as fine-tuning doesn't change them
@@ -515,33 +505,29 @@ def main_finetune():
              mean=state_mean, std=state_std, max_ep_len=original_model_max_ep_len)
 
     logger.info(f"Fine-tuning finished. Model saved to: {final_finetuned_model_path}")
-
-    # Optionally, evaluate the fine-tuned model online (using the original evaluate_online function)
-    # from your_training_script import evaluate_online
-    # evaluate_online(
-    #     env_creator=create_env,
-    #     model_path=final_finetuned_model_path,
-    #     target_rtg=TARGET_RETURN_FOR_COLLECTION, # Or a different target for eval
-    #     num_episodes=5
-    # )
     
 # --- ACTION SPACE CONFIGURATION (Must match pre-trained model and env) ---
 NUM_ACTIONS_PER_DIM = [3, 3, 2]
 NUM_ACTION_DIMS = len(NUM_ACTIONS_PER_DIM)
 STATE_DIM = 54 # Must match environment
 CONTEXT_LENGTH = 20  # K: Must match pre-trained model's context length
-WEIGHT = 0 # Weight for the reward function (0 for score, 1 for arousal, 0.5 for blended)
+
+WEIGHT = 0 # Weight for the reward function (0 for optimize, 1 for arousal, 0.5 for blended)
 
 # --- Paths ---
-PRETRAINED_MODEL_PATH = "examples\\Agents\\DT\\Results\\preTrained\\PPO_Optimize_score_SolidObs_DT_final"
-FINETUNED_MODEL_NAME_BASE = "finetuned_dt_Optimize"
+REWARD_TYPE = "Optimize"  # Can be "Optimize", "Arousal", or "Blended"
+OLD_VERSION = "v100"
+NEW_VERSION = "v200"  # Version of fine-tuned model
+# PRETRAINED_MODEL_PATH = "examples\\Agents\\DT\\Results\\preTrained\\PPO_Optimize_score_SolidObs_DT_final"
+PRETRAINED_MODEL_PATH = f"examples\\Agents\\DT\\Results\\fineTuned\\ODT_{REWARD_TYPE}_{OLD_VERSION}"
+FINETUNED_MODEL_NAME_BASE = f"ODT_{REWARD_TYPE}"
 OUTPUT_DIR_BASE = "examples\\Agents\\DT\\output"
 LOGS_DIR_BASE = "examples\\Agents\\DT\\logs"
 NEW_DATA_SAVE_PATH_BASE = "examples\\Agents\\DT\\Results\\fineTuned"
 
 # --- Fine-tuning Hyperparameters ---
-NUM_ONLINE_EPISODES_TO_COLLECT = 10 # Number of new episodes to collect per fine-tuning iteration
-FINETUNE_EPOCHS = 5                # Number of epochs to fine-tune on the augmented dataset
+NUM_ONLINE_EPISODES_TO_COLLECT = 100 # Number of new episodes to collect per fine-tuning iteration
+FINETUNE_EPOCHS = 30                # Number of epochs to fine-tune on the augmented dataset
 FINETUNE_BATCH_SIZE = 32
 FINETUNE_LEARNING_RATE = 5e-5      # Often smaller for fine-tuning
 TARGET_RETURN_FOR_COLLECTION = 17  # Target return to use when collecting new data (can be tuned)
