@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
 """
 Requirements:
     Discern between different types of inputs such as images, vectors etc.
@@ -19,16 +18,17 @@ class StateEmbedder(nn.Module):
         self.projection = nn.Linear(max_input_dim,embed_dim)
     def forward(self,x):
         return self.projection(x)
+
 class DecisionTransformer(nn.Module):
-    def __init__(self, state_dim, act_dim, hidden_size=128, max_length=20, n_layers=3, n_heads=4):
+    def __init__(self, state_dim, act_dim, hidden_size=128, max_state_dim = 20, max_length=20, n_layers=3, n_heads=4):
         super().__init__()
         self.hidden_size = hidden_size
+        self.max_state_dim = max_state_dim
         self.max_length = max_length
-
         # Input embedding
         self.embed_timestep = nn.Embedding(max_length, hidden_size)
         self.embed_return = nn.Linear(1, hidden_size)
-        self.embed_state_vector = nn.Linear(state_dim, hidden_size)
+        self.embed_state_vector = nn.Linear(max_state_dim, hidden_size)
         self.embed_state_image = nn.Conv2d(3, hidden_size, kernel_size=3, stride=1, padding=1)
         self.embed_action = nn.Linear(act_dim, hidden_size)
 
@@ -57,6 +57,7 @@ class DecisionTransformer(nn.Module):
 
         # Embed each modality
         time_emb = self.embed_timestep(timesteps)                       # (B, T, hidden)
+        states,mask = self.padding(states)
         state_emb = self.embed_state_vector(states)                 # (B, T, hidden)
         print(state_emb.size())
         print(time_emb.size())
@@ -78,3 +79,12 @@ class DecisionTransformer(nn.Module):
         action_preds = self.predict_action(action_tokens)              # (B, T, act_dim)
 
         return action_preds
+    def padding(self,input_tensor:torch.Tensor):
+        if input_tensor.size(-1) < self.max_state_dim:
+            zeros = torch.zeros(input_tensor.size(0), input_tensor.size(1), self.max_state_dim  - input_tensor.size(2))
+            output_tensor = torch.cat((input_tensor,zeros), dim=2)
+            mask = torch.zeros(output_tensor.size(0),output_tensor.size(1),output_tensor.size(2))
+            mask[:input_tensor.size(0), :input_tensor.size(1), :input_tensor.size(2)] = 1
+            return output_tensor,mask
+        mask = torch.ones(input_tensor.size(0), input_tensor.size(1), input_tensor.size(2))
+        return input_tensor,mask
