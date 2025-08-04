@@ -4,15 +4,13 @@ from mlagents_envs.environment import UnityEnvironment
 from mlagents_envs.side_channel.engine_configuration_channel import EngineConfigurationChannel
 from mlagents_envs.base_env import ActionTuple
 import pandas as pd
-
 def add_to_csv(data, filename):
 
     df = pd.DataFrame(data)
     df.to_csv(filename, mode='a', header=False, index=False)
-
 # Path to Unity environment and ONNX model
-UNITY_ENV_PATH = "Games/Crawler/UnityEnvironment.exe"
-ONNX_MODEL_PATH = "MultiEnvironmentProject/ML_Agent/Models/ONNX/Crawler.onnx"
+UNITY_ENV_PATH = "Games/3DBallHard/UnityEnvironment.exe"
+ONNX_MODEL_PATH = "MultiEnvironmentProject/ML_Agent/Models/ONNX/3DBallHard.onnx"
 try:
     engine_configuration_channel = EngineConfigurationChannel()
 
@@ -48,6 +46,7 @@ try:
     episode_observations = []
     # Main loop
     for episode in range(5):  # Run a few episodes
+        episodic_step_count = 0
         env.reset()
         actions = []
         observations = []
@@ -76,6 +75,16 @@ try:
                 action = action[2]
                 actions.append(action[0])  # shape (2,)
                 agent_ids.append(agent_id)
+                data = {
+                    "observations": [[obs_list[i].tolist() for i in range(len(obs_list))]],
+                    "actions": [action.tolist()],
+                    "reward" : reward,
+                    "game" : behavior_name.split('?')[0],
+                    "episode": episode+1,
+                    "time_step": episodic_step_count,
+                    "agent_id": agent_id
+                }
+                add_to_csv(data, "MultiEnvironmentProject/Database/MLAgentsOutputs.csv")
 
 
             # Convert and set actions
@@ -88,23 +97,18 @@ try:
 
             env.step()
             step_count += 1
+            episodic_step_count += 1
 
             # Exit episode when agents are done
             if len(terminal_steps) > 0:
                 break
+        
         episode_actions.append(actions)
         episode_rewards.append(rewards)
         episode_observations.append(observations)
 
+
     env.close()
-    game = [behavior_name.split('?')[0] for _ in range(len(episode_rewards))]  # Extract game name from behavior name
-    data = {
-        'rewards': episode_rewards,
-        'actions': episode_actions,
-        'observations': episode_observations,
-        'behavior_name': game,
-    }
-    add_to_csv(data, "MultiEnvironmentProject/Database/MLAgentsOutputs.csv")
 except KeyboardInterrupt:
     env.close()
     print("[INFO] Process interrupted by user.")
