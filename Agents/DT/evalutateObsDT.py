@@ -10,11 +10,14 @@ import os
 import json
 
 import imageio
-
-from affectively_environments.envs.solid_game_obs import SolidEnvironmentGameObs
-from affectively_environments.envs.base import compute_confidence_interval
+#from affectively_environments.envs.solid_game_obs import SolidEnvironmentGameObs
+#from affectively_environments.envs.base import compute_confidence_interval
 from trainObsDT import plot_metrics
-
+import sys
+sys.path.insert(0, r"C:\Research")
+sys.path.insert(0,r"C:\Research\AffectivelyFramework")
+from AffectivelyFramework.affectively.environments.solid_game_obs import SolidEnvironmentGameObs
+from AffectivelyFramework.affectively.environments.base import compute_confidence_interval
 # --- Configuration ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -328,9 +331,9 @@ def record_gif_episode(env_creator, model_path, target_rtg, gif_path="episode.gi
         print("No valid frames were captured. GIF was not saved.")
 
 
-NUM_ACTIONS_PER_DIM = [3, 3, 2]  # <<< --- MUST BE SET CORRECTLY
-NUM_ACTION_DIMS = len(NUM_ACTIONS_PER_DIM)
-STATE_DIM = 54
+NUM_ACTIONS_PER_DIM = [50, 50, 50, 50, 50, 50, 50, 50, 50, 50]  # <<< --- MUST BE SET CORRECTLY
+NUM_ACTION_DIMS = 10
+STATE_DIM = 400
 CONTEXT_LENGTH = 20  # K: How many steps the model sees
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -347,7 +350,7 @@ if __name__ == "__main__":
     target_return = 17 # Target return for evaluation
     
     # name = f"{data_from}_{label}_{reward_type}_SolidObs_DT"
-    name = f"ODT_Optimize_v100"
+    name = f"model"
     
     weight = 0
 
@@ -364,13 +367,13 @@ if __name__ == "__main__":
         discretize=True
     
     # Set the path to the saved model artifacts
-    final_model_path = f"examples\\Agents\\DT\\Results\\fineTuned\\{name}"
+    final_model_path = f"MultiEnvironmentProject/Agents/DT/Results/Explore_Blended_blended_moreTrained_DT_final"
     # final_model_path = f"examples\\Agents\\DT\\Results\\Explore_Blended_moreTrained_DT"
     
     print(f'Starting to evaluate {name}')
     
     def create_env():
-        env = SolidEnvironmentGameObs(0, graphics=False, weight=weight, logging=False, path="Builds\\MS_Solid\\racing.exe", discretize=discretize)
+        env = SolidEnvironmentGameObs(0, graphics=False, weight=weight, discretize=discretize, cluster=None, target_arousal=0,period_ra=1)
         sideChannel = env.customSideChannel
         env.targetSignal = np.ones
         return env

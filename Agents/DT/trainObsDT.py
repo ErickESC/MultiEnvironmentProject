@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from sklearn.metrics import f1_score, accuracy_score
 import matplotlib.pyplot as plt
+import random
 
 # --- Configuration ---
 logging.basicConfig(level=logging.INFO)
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 # --- 1. Data Loading and Preprocessing ---
 
-def load_data(pickle_path,
+def load_data(pickle_paths,
                    cumulative_rewards_in_dataset=False):
     """
     Loads dataset from a pickle file generated.
@@ -49,136 +50,144 @@ def load_data(pickle_path,
             'done': bool
         }
     """
-    logger.info(f"Loading dataset from: {pickle_path}")
-    try:
-        with open(pickle_path, 'rb') as f:
-            dataset = pickle.load(f)
-    except FileNotFoundError:
-        logger.error(f"Dataset file not found at: {pickle_path}")
-        raise
-    except Exception as e:
-        logger.error(f"Error loading pickle file: {e}")
-        raise
-
-    # Extract data lists (List of Lists)
-    observations_list = dataset['observations']
-    actions_list = dataset['actions']
-    rewards_list = dataset['rewards'] # This might be cumulative or per-step
-    dones_list = dataset['dones']
-
-    num_episodes = len(observations_list)
-    if not (len(actions_list) == num_episodes and len(rewards_list) == num_episodes and len(dones_list) == num_episodes):
-        logger.error("Dataset lists (observations, actions, rewards, dones) have inconsistent lengths.")
-        raise ValueError("Inconsistent number of episodes in dataset file.")
-
-    # Add logic to choose the best n trajectories based on total reward
-    observations_list, actions_list, rewards_list, dones_list = choose_best_episodes(observations_list, actions_list, rewards_list, 
-                                                                                     dones_list, cumulative_rewards_in_dataset=cumulative_rewards_in_dataset)
-
     processed_episodes = []
     all_final_scores = [] # To calculate average return from data
+    for pickle_path in pickle_paths:
+        logger.info(f"Loading dataset from: {pickle_path}")
+        try:
+            with open(pickle_path, 'rb') as f:
+                dataset = pickle.load(f)
+        except FileNotFoundError:
+            logger.error(f"Dataset file not found at: {pickle_path}")
+            raise
+        except Exception as e:
+            logger.error(f"Error loading pickle file: {e}")
+            raise
 
-    num_episodes = len(observations_list) # Update to the filtered number of episodes
-    
-    logger.info(f"Processing {num_episodes} episodes...")
-    for i in range(num_episodes):
-        ep_obs = observations_list[i]
-        ep_act = actions_list[i]
-        ep_rew = rewards_list[i] # Raw rewards from file
-        ep_done = dones_list[i]
+        # Extract data lists (List of Lists)
+        observations_list = dataset['observations']
+        actions_list = dataset['actions']
+        rewards_list = dataset['rewards'] # This might be cumulative or per-step
+        dones_list = dataset['dones']
 
-        ep_len = len(ep_obs)
-        if not (len(ep_act) == ep_len and len(ep_rew) == ep_len and len(ep_done) == ep_len):
-            logger.warning(f"Episode {i} has inconsistent lengths between obs/act/rew/done. Skipping. Lengths: O={len(ep_obs)}, A={len(ep_act)}, R={len(ep_rew)}, D={len(ep_done)}")
-            continue
-        if ep_len == 0:
-            logger.warning(f"Episode {i} is empty. Skipping.")
-            continue
+        num_episodes = len(observations_list)
+        if not (len(actions_list) == num_episodes and len(rewards_list) == num_episodes and len(dones_list) == num_episodes):
+            logger.error("Dataset lists (observations, actions, rewards, dones) have inconsistent lengths.")
+            raise ValueError("Inconsistent number of episodes in dataset file.")
 
-        episode_data = []
-        current_episode_total_reward = 0.0
-        for t in range(ep_len):
-             # --- Input Validation and Correction ---
-            # Ensure observation is numpy array of correct shape and type
-            try:
-                observation = np.array(ep_obs[t], dtype=np.float32)
-                if observation.shape != (STATE_DIM,):
-                     raise ValueError(f"Observation shape mismatch: expected ({STATE_DIM},), got {observation.shape}")
-            except Exception as e:
-                logger.warning(f"Skipping step {t} in episode {i} due to invalid observation: {e}")
-                continue # Skip this step if observation is bad
+        # Add logic to choose the best n trajectories based on total reward
+        observations_list, actions_list, rewards_list, dones_list = choose_best_episodes(observations_list, actions_list, rewards_list, 
+                                                                                         dones_list, cumulative_rewards_in_dataset=cumulative_rewards_in_dataset)
 
-            # Ensure action is numpy array of correct shape, type, and value range
-            try:
-                action = np.array(ep_act[t], dtype=np.int64)
-                if action.shape != (NUM_ACTION_DIMS,):
-                    raise ValueError(f"Action shape mismatch: expected ({NUM_ACTION_DIMS},), got {action.shape}")
-                # Check if action values are within bounds
-                for dim_idx, act_val in enumerate(action):
-                    if not (0 <= act_val < NUM_ACTIONS_PER_DIM[dim_idx]):
-                        raise ValueError(f"Action value out of bounds in dim {dim_idx}: got {act_val}, expected < {NUM_ACTIONS_PER_DIM[dim_idx]}")
-            except Exception as e:
-                 logger.warning(f"Skipping step {t} in episode {i} due to invalid action: {e}")
-                 continue # Skip this step if action is bad
 
-            done = bool(ep_done[t])
 
-            # --- Calculate PER-STEP reward ---
-            step_reward = 0.0
-            raw_reward_t = ep_rew[t] # The value stored at this step in the file
+        num_episodes = len(observations_list) # Update to the filtered number of episodes
 
-            if cumulative_rewards_in_dataset:
-                if t == 0:
-                    step_reward = float(raw_reward_t) # First step's reward is the first cumulative value
-                else:
-                    # Per-step reward is diff between current and previous cumulative score
-                    raw_reward_prev = ep_rew[t-1]
-                    # Handle potential type issues during subtraction
-                    try:
-                        step_reward = float(raw_reward_t) - float(raw_reward_prev)
-                    except (TypeError, ValueError) as e:
-                         logger.warning(f"Could not calculate step reward at step {t} in episode {i} due to type issue: {e}. Setting reward to 0.")
-                         step_reward = 0.0
-            else:
-                # If dataset stores per-step rewards directly
+        logger.info(f"Processing {num_episodes} episodes...")
+        for i in range(num_episodes):
+            ep_obs = observations_list[i]
+            ep_act = actions_list[i]
+            ep_rew = rewards_list[i] # Raw rewards from file
+            ep_done = dones_list[i]
+
+            ep_len = len(ep_obs)
+            if not (len(ep_act) == ep_len and len(ep_rew) == ep_len and len(ep_done) == ep_len):
+                logger.warning(f"Episode {i} has inconsistent lengths between obs/act/rew/done. Skipping. Lengths: O={len(ep_obs)}, A={len(ep_act)}, R={len(ep_rew)}, D={len(ep_done)}")
+                continue
+            if ep_len == 0:
+                logger.warning(f"Episode {i} is empty. Skipping.")
+                continue
+
+            episode_data = []
+            current_episode_total_reward = 0.0
+            for t in range(ep_len):
+                 # --- Input Validation and Correction ---
+                # Ensure observation is numpy array of correct shape and type
                 try:
-                    step_reward = float(raw_reward_t)
-                except (TypeError, ValueError) as e:
-                    logger.warning(f"Could not parse step reward at step {t} in episode {i} due to type issue: {e}. Setting reward to 0.")
-                    step_reward = 0.0
+                    observation = np.array(ep_obs[t], dtype=np.float32)
+                    if observation.shape != (STATE_DIM,):
+                        if observation.shape[0] < STATE_DIM:
+                            observation = pad_dimensions(observation,STATE_DIM)
+                        else:
+                            raise ValueError(f"Observation shape mismatch: expected ({STATE_DIM},), got {observation.shape}")
+                except Exception as e:
+                    logger.warning(f"Skipping step {t} in episode {i} due to invalid observation: {e}")
+                    continue # Skip this step if observation is bad
+
+                # Ensure action is numpy array of correct shape, type, and value range
+                try:
+                    action = np.array(ep_act[t], dtype=np.int64)
+                    if action.shape != (NUM_ACTION_DIMS,):
+                        if action.shape[0] < NUM_ACTION_DIMS:
+                            action = pad_dimensions(action, NUM_ACTION_DIMS)
+                        else:
+                            raise ValueError(f"Action shape mismatch: expected ({NUM_ACTION_DIMS},), got {action.shape}")
+                    # Check if action values are within bounds
+                    for dim_idx, act_val in enumerate(action):
+                        if not (-100 <= act_val < NUM_ACTIONS_PER_DIM[dim_idx]):
+                            raise ValueError(f"Action value out of bounds in dim {dim_idx}: got {act_val}, expected < {NUM_ACTIONS_PER_DIM[dim_idx]}")
+                except Exception as e:
+                     logger.warning(f"Skipping step {t} in episode {i} due to invalid action: {e}")
+                     continue # Skip this step if action is bad
+
+                done = bool(ep_done[t])
+
+                # --- Calculate PER-STEP reward ---
+                step_reward = 0.0
+                raw_reward_t = ep_rew[t] # The value stored at this step in the file
+
+                if cumulative_rewards_in_dataset:
+                    if t == 0:
+                        step_reward = float(raw_reward_t) # First step's reward is the first cumulative value
+                    else:
+                        # Per-step reward is diff between current and previous cumulative score
+                        raw_reward_prev = ep_rew[t-1]
+                        # Handle potential type issues during subtraction
+                        try:
+                            step_reward = float(raw_reward_t) - float(raw_reward_prev)
+                        except (TypeError, ValueError) as e:
+                             logger.warning(f"Could not calculate step reward at step {t} in episode {i} due to type issue: {e}. Setting reward to 0.")
+                             step_reward = 0.0
+                else:
+                    # If dataset stores per-step rewards directly
+                    try:
+                        step_reward = float(raw_reward_t)
+                    except (TypeError, ValueError) as e:
+                        logger.warning(f"Could not parse step reward at step {t} in episode {i} due to type issue: {e}. Setting reward to 0.")
+                        step_reward = 0.0
 
 
-            current_episode_total_reward += step_reward
+                current_episode_total_reward += step_reward
 
-            # Append the transition with the calculated *per-step* reward
-            episode_data.append({
-                'observation': observation,
-                'action': action, # Store the original integer action indices
-                'reward': step_reward,
-                'done': done
-            })
-        # --- End of episode loop ---
+                # Append the transition with the calculated *per-step* reward
+                episode_data.append({
+                    'observation': observation,
+                    'action': action, # Store the original integer action indices
+                    'reward': step_reward,
+                    'done': done
+                })
+            # --- End of episode loop ---
 
-        # Only add episode if it contains valid data
-        if episode_data:
-            processed_episodes.append(episode_data)
-            all_final_scores.append(current_episode_total_reward) # Store the calculated total reward
-        else:
-             logger.warning(f"Episode {i} resulted in no valid steps after cleaning. Skipping.")
+            # Only add episode if it contains valid data
+            if episode_data:
+                processed_episodes.append(episode_data)
+                all_final_scores.append(current_episode_total_reward) # Store the calculated total reward
+            else:
+                 logger.warning(f"Episode {i} resulted in no valid steps after cleaning. Skipping.")
 
-    # --- End of all episodes loop ---
+        # --- End of all episodes loop ---
 
-    if not processed_episodes:
-        logger.error("No valid episodes found after processing.")
-        raise ValueError("No episodes processed. Check dataset integrity and input validation steps.")
+        if not processed_episodes:
+            logger.error("No valid episodes found after processing.")
+            raise ValueError("No episodes processed. Check dataset integrity and input validation steps.")
 
-    avg_return = np.mean(all_final_scores) if all_final_scores else 0
-    max_return = np.max(all_final_scores) if all_final_scores else 0
-    logger.info(f"Loaded and processed {len(processed_episodes)} episodes.")
-    logger.info(f"Calculated Average Episode Return from data: {avg_return:.2f}")
-    logger.info(f"Calculated Max Episode Return from data: {max_return:.2f}")
-    logger.info(f"Suggest using TARGET_RETURN around {avg_return:.2f} for evaluation.")
-
+        avg_return = np.mean(all_final_scores) if all_final_scores else 0
+        max_return = np.max(all_final_scores) if all_final_scores else 0
+        logger.info(f"Loaded and processed {len(processed_episodes)} episodes.")
+        logger.info(f"Calculated Average Episode Return from data: {avg_return:.2f}")
+        logger.info(f"Calculated Max Episode Return from data: {max_return:.2f}")
+        logger.info(f"Suggest using TARGET_RETURN around {avg_return:.2f} for evaluation.")
+    random.shuffle(processed_episodes)
     return processed_episodes
 
 
@@ -276,6 +285,9 @@ def choose_best_episodes(observations_list, actions_list, rewards_list, dones_li
     # Calculate the total rewards for each episode
     # Calculate total rewards for each episode
     total_rewards = []
+    rewards_list = np.array(rewards_list)
+    B,T = rewards_list.shape[0], rewards_list.shape[1]
+    rewards_list = rewards_list.reshape(B,T)
     for rewards in rewards_list:
         if cumulative_rewards_in_dataset:
             # If rewards are cumulative, the last reward in the list is the total reward
@@ -352,6 +364,8 @@ class MultiDiscreteDecisionTransformerTrainer(Trainer):
 
         # Keep original action INDICES (long tensor) for loss calculation
         original_actions_long = inputs["actions"] # Shape: (batch, seq_len, num_action_dims)
+        original_actions_long_mask = (original_actions_long != -100)
+        original_actions_long[~original_actions_long_mask] = 0
 
         # --- Create concatenated one-hot actions for MODEL INPUT ---
         batch_size, seq_len, _ = original_actions_long.shape
@@ -595,7 +609,7 @@ def train(pickle_path, cumulative_rewards_in_dataset=False, model_name='decision
     trainer.train()
 
     # 5. Save final model
-    final_model_path = final_model_path = os.path.join(model_dir, "Results", f"{model_name}_final")
+    final_model_path = os.path.join(model_dir, "Results", f"{model_name}_final")
     trainer.save_model(final_model_path)
 
     # Save normalization stats
@@ -707,10 +721,13 @@ def plot_metrics(log_history, output_dir):
     plt.show()
     logger.info(f"Training metrics plot saved to {plot_path}")
 
+def pad_dimensions(input_vector, dims):
+    return np.pad(input_vector, (0,dims-input_vector.shape[0]), mode="constant", constant_values=-100)
+
 # --- Constants and Hyperparameters ---
-NUM_ACTIONS_PER_DIM = [3, 3, 2]  # Action space for SolidGame environment
-NUM_ACTION_DIMS = len(NUM_ACTIONS_PER_DIM)
-STATE_DIM = 7 # State dimension for SolidGame environment 54 continuous 7 discrete
+NUM_ACTIONS_PER_DIM = [50, 50, 50, 50, 50, 50, 50, 50, 50, 50]  # Action space for SolidGame environment
+NUM_ACTION_DIMS = 10#len(NUM_ACTIONS_PER_DIM)
+STATE_DIM = 400 # State dimension for SolidGame environment 54 continuous 7 discrete
 CONTEXT_LENGTH = 20  # K: How many steps the model sees
 TARGET_RETURN = 8.71 # Target return for evaluation
 PICK_BEST = 100
@@ -744,22 +761,25 @@ if __name__ == "__main__":
     # Set cumulative_rewards_in_dataset=False if 'rewards' is per-step reward
     CUMULATIVE_REWARDS = True if reward_type == 'score' else False
     
-    dataset_path = os.path.join("examples", "Agents", data_from, "datasets", f"{data_from}_{label}_{reward_type}_moreTrained.pkl") 
-    DIR_PATH = os.path.join("examples", "Agents", "DT")
+    #dataset_path = os.path.join("examples", "Agents", data_from, "datasets", f"{data_from}_{label}_{reward_type}_moreTrained.pkl") 
+    dataset_paths = ["MultiEnvironmentProject/Database/solid_test_dataset.pkl","MultiEnvironmentProject/Database/pirates_test_dataset.pkl"]
+    #DIR_PATH = os.path.join("examples", "Agents", "DT")
+    DIR_PATH = "MultiEnvironmentProject/Agents/DT"
     # dataset_path = os.path.join("examples", "Agents", data_from, "datasets", f"testing_dataset.pkl")
     
-    if running_on_server:
-        dataset_path = os.path.join(ROOT_PATH, "examples", "Agents", data_from, "datasets", f"{data_from}_{label}_{reward_type}_SolidObs_dataset.pkl")
-        DIR_PATH = os.path.join(ROOT_PATH, "examples", "Agents", "DT")
-        # dataset_path = os.path.join(ROOT_PATH, "examples", "Agents", data_from, "datasets", f"testing_dataset.pkl")
-    
-    # Verify that paths are correct
-    if not os.path.exists(dataset_path):
-        logger.error(f"Dataset directory not found at: {dataset_path}")
-        raise SystemExit(f"Dataset directory not found at: {dataset_path}")
-    if not os.path.exists(DIR_PATH):
-        logger.error(f"Directory not found at: {DIR_PATH}")
-        raise SystemExit(f"Directory not found at: {DIR_PATH}")
+    for dataset_path in dataset_paths:
+        if running_on_server:
+            dataset_path = os.path.join(ROOT_PATH, "examples", "Agents", data_from, "datasets", f"{data_from}_{label}_{reward_type}_SolidObs_dataset.pkl")
+            DIR_PATH = os.path.join(ROOT_PATH, "examples", "Agents", "DT")
+            # dataset_path = os.path.join(ROOT_PATH, "examples", "Agents", data_from, "datasets", f"testing_dataset.pkl")
+
+        # Verify that paths are correct
+        if not os.path.exists(dataset_path):
+            logger.error(f"Dataset directory not found at: {dataset_path}")
+            raise SystemExit(f"Dataset directory not found at: {dataset_path}")
+        if not os.path.exists(DIR_PATH):
+            logger.error(f"Directory not found at: {DIR_PATH}")
+            raise SystemExit(f"Directory not found at: {DIR_PATH}")
 
     
     dt_name = f"{data_from}_{label}_{reward_type}_moreTrained_DT"
@@ -792,7 +812,7 @@ if __name__ == "__main__":
     logger.info(f"Traning: {dt_name} on {dataset_path}")
 
     # Train the model
-    trained_model, s_mean, s_std, m_ep_len, trainer = train(pickle_path=dataset_path, cumulative_rewards_in_dataset=CUMULATIVE_REWARDS, 
+    trained_model, s_mean, s_std, m_ep_len, trainer = train(pickle_path=dataset_paths, cumulative_rewards_in_dataset=CUMULATIVE_REWARDS, 
                                                             training_args=training_args, model_name=dt_name, model_dir=DIR_PATH)
     
     logger.info(f"Model {dt_name} trained")
