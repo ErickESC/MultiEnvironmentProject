@@ -9,10 +9,10 @@ import logging
 import os
 import json
 
-import imageio
+# import imageio
 
-from affectively_environments.envs.solid_game_obs import SolidEnvironmentGameObs
-from affectively_environments.envs.base import compute_confidence_interval
+from affectively.environments.solid_game_obs import SolidEnvironmentGameObs
+from affectively.environments.base import compute_confidence_interval
 from trainObsDT import plot_metrics
 
 # --- Configuration ---
@@ -330,8 +330,8 @@ def record_gif_episode(env_creator, model_path, target_rtg, gif_path="episode.gi
 
 NUM_ACTIONS_PER_DIM = [3, 3, 2]  # <<< --- MUST BE SET CORRECTLY
 NUM_ACTION_DIMS = len(NUM_ACTIONS_PER_DIM)
-STATE_DIM = 54
-CONTEXT_LENGTH = 20  # K: How many steps the model sees
+STATE_DIM = 81
+CONTEXT_LENGTH = 5  # K: How many steps the model sees
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # --- Main Execution ---
@@ -344,12 +344,17 @@ if __name__ == "__main__":
     data_from = 'PPO'
     # data_from = 'Explore'
     
-    target_return = 17 # Target return for evaluation
+    # Target return for evaluation
+    target_return = 7000
+    # target_return = 17
     
     # name = f"{data_from}_{label}_{reward_type}_SolidObs_DT"
-    name = f"ODT_Optimize_v100"
+    # name = f"ODT_Optimize_14k_v300"
+    # name = f"ODT_Blended_14k_v300"
+    # name = f"ODT_Arousal_14k_v300"
+    name = "testingDT_on_newAF_final"
     
-    weight = 0
+    weight = 0.5
 
     if weight == 0:
         label = 'Optimize'
@@ -358,19 +363,28 @@ if __name__ == "__main__":
     else:
         label = 'Arousal'
     
-    discretize=False
+    discretize=0
     
     if data_from == 'Explore':
-        discretize=True
+        discretize=1
     
     # Set the path to the saved model artifacts
-    final_model_path = f"examples\\Agents\\DT\\Results\\fineTuned\\{name}"
+    final_model_path = f"agents\\game_obs\\DT\\Results\\{name}"
     # final_model_path = f"examples\\Agents\\DT\\Results\\Explore_Blended_moreTrained_DT"
+    # final_model_path = f"examples\\Agents\\DT\\Results\\preTrained\\PPO_Optimize_score_SolidObs_DT_final"
     
     print(f'Starting to evaluate {name}')
     
     def create_env():
-        env = SolidEnvironmentGameObs(0, graphics=False, weight=weight, logging=False, path="Builds\\MS_Solid\\racing.exe", discretize=discretize)
+        env = SolidEnvironmentGameObs(
+                    id_number=0,
+                    weight=0,
+                    graphics=True,
+                    cluster=0,
+                    target_arousal=0,
+                    period_ra=0,
+                    discretize=0
+                )
         sideChannel = env.customSideChannel
         env.targetSignal = np.ones
         return env
@@ -380,11 +394,11 @@ if __name__ == "__main__":
         env_creator=create_env,
         model_path=final_model_path,
         target_rtg=target_return,
-        num_episodes=30
+        num_episodes=10
     )
     
     print(f"Best Score: {compute_confidence_interval(scores)}, Mean Arousal: {compute_confidence_interval(arousal)}")
-    print(f'Done evaluating {name}')
+    print(f'Done evaluating {name} in {label}')
     
     # --- Record a GIF of one episode ---
     # record_gif_episode(
