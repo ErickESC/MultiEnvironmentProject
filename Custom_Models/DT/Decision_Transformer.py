@@ -1,7 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+import numpy as np
+from ...Agents.DT.multiEnvDT import MultiGameDTConfig,GameConfig
+import cv2
 """
 Requirements:
     Discern between different types of inputs such as images, vectors etc.
@@ -73,22 +75,13 @@ class DecisionTransformer(nn.Module):
         action_tokens = x[:, :, 2, :]                                   # (B, T, hidden)
         action_preds = self.predict_action(action_tokens)              # (B, T, act_dim)
 
-        return action_preds[:,:,:A_B]
-    
-
-    
-    def padding(self,time,input_tensor:torch.Tensor,pad_size=0):
-        print(input_tensor.size(0),input_tensor.size(1),input_tensor.size(2),time,pad_size)
-        if input_tensor.size(-1) < pad_size:
-            print(input_tensor.size(0),input_tensor.size(1), pad_size  - input_tensor.size(2))
-            zeros = torch.zeros(input_tensor.size(0),input_tensor.size(1), pad_size  - input_tensor.size(2),device=input_tensor.device)
-            print("I ran")
+        return action_preds
+    def padding(self,input_tensor:torch.Tensor):
+        if input_tensor.size(-1) < self.max_state_dim:
+            zeros = torch.zeros(input_tensor.size(0), input_tensor.size(1), self.max_state_dim  - input_tensor.size(2))
             output_tensor = torch.cat((input_tensor,zeros), dim=2)
-            if output_tensor.size(1) < time:
-                zeros = torch.zeros(output_tensor.size(0),self.max_length - output_tensor.size(1), output_tensor.size(2),device=input_tensor.device)
-                output_tensor = torch.cat((output_tensor,zeros), dim=1)
-            #mask = torch.ones_like(input_tensor)
-            #output_tensor = output_tensor * mask
-            return output_tensor
+            mask = torch.zeros(output_tensor.size(0),output_tensor.size(1),output_tensor.size(2))
+            mask[:input_tensor.size(0), :input_tensor.size(1), :input_tensor.size(2)] = 1
+            return output_tensor,mask
         mask = torch.ones(input_tensor.size(0), input_tensor.size(1), input_tensor.size(2))
-        return input_tensor
+        return input_tensor,mask

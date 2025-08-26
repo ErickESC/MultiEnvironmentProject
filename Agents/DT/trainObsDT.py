@@ -24,6 +24,161 @@ import random
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+# --- 0. Custom Model ---
+class DuelingArchitecture(nn.Module):
+    def __init__(self,embed_dim,act_dim):
+        super(DuelingArchitecture,self).__init__()
+        self.fc_adv = nn.Linear(embed_dim, embed_dim)
+        self.fc_value = nn.Linear(embed_dim, embed_dim)
+        self.adv = nn.Linear(embed_dim,act_dim)
+        self.value = nn.Linear(embed_dim,1)
+    def forward(self,x):
+        x_adv = F.relu(self.fc_adv(x))
+        x_adv = self.adv(x_adv)
+        x_value = F.relu(self.fc_value(x))
+        x_value = self.value(x_value)
+        adv_average = torch.mean(x_adv,dim=2,keepdim=True)
+        return x_value + x_adv - adv_average
+
+class DecisionTransformerWithImage(nn.Module):
+    
+    def __init__(self,
+                config,
+                dueling_network:bool = True):
+        super().__init__()
+        self.embedding_dim = config.hidden_size
+        self.max_state_dim = config.state_dim
+        self.context_length = config.max_length
+        self.n_layer = config.n_layer
+        self.n_head = config.n_head
+        self.max_ep_length = config.max_ep_len
+        self.max_act_dim = config.act_dim
+        self.img_dim_x = 200
+        self.img_dim_y = 200
+
+        # Input embedding
+        self.state_encoder = nn.Linear(self.max_state_dim, self.embedding_dim)
+        self.state_encoder_image = nn.Sequential(
+            nn.Conv2d(3, 8, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(8, 32, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, self.embedding_dim, kernel_size=3, stride=1, padding=1))
+        self.action_encoder = nn.Linear(self.max_state_dim, self.embedding_dim)
+        #self.action_encoder = nn.Embedding(self.max_state_dim, self.embedding_dim)
+        self.rtg_encoder = nn.Linear(1, self.embedding_dim)
+        self.timestep_encoder = nn.Embedding(config.max_ep_len, self.embedding_dim)
+        self.embed_ln = nn.LayerNorm(self.embedding_dim)
+
+        # Transformer
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.embedding_dim,
+            nhead=self.n_head,
+            dim_feedforward=4 * self.embedding_dim,
+            dropout=0.1,
+            activation='relu',
+            batch_first=True
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=self.n_layer)
+        self.predict_ln = nn.LayerNorm(self.embedding_dim)
+        # Prediction heads
+        self.action_heads = DuelingArchitecture(self.embedding_dim, 400)
+        #self.action_heads = nn.ModuleList({
+        #str(gid): self._create_action_head(gconf, dueling_network)
+        #for gconf in config.action_discrete_cardinalities
+        #})
+
+    def _create_action_head(self, game_config, dueling_network:bool = False):
+        head_layers = nn.ModuleDict()
+        if not dueling_network:
+            head_layers['discrete'] = nn.ModuleList([
+            nn.Linear(self.embedding_dim, card) for card in game_config.action_discrete_cardinalities
+            ])
+        #if not dueling_network:
+        #    if game_config.action_type in ['continuous', 'mixed']:
+        #        head_layers['continuous'] = nn.Linear(self.embedding_dim, game_config.action_continuous_dim)
+        #    if game_config.action_type in ['discrete', 'mixed']:
+        #        head_layers['discrete'] = nn.ModuleList([
+        #            nn.Linear(self.embedding_dim, card) for card in game_config.action_discrete_cardinalities
+        #        ])
+        #else:
+        #    if game_config.action_type in ['continuous', 'mixed']:
+        #        head_layers['continuous'] = DuelingArchitecture(self.embedding_dim, game_config.action_continuous_dim)
+        #    if game_config.action_type in ['discrete', 'mixed']:
+        #        head_layers['discrete'] = nn.ModuleList([
+        #            DuelingArchitecture(self.embedding_dim, card) for card in game_config.action_discrete_cardinalities
+        #        ])
+
+        return head_layers
+
+    def _rescale_image(self, img:np.ndarray) -> torch.Tensor:
+        """ Rescale images to accepted resolution"""
+        if img.shape[2] != self.img_dim_x or img.shape[3] != self.img_dim_y:
+            resized_images = np.zeros((img.shape[0], img.shape[1], self.img_dim_x, self.img_dim_y, 3), dtype=np.int64)
+            for i in range(img.shape[0]):
+                for j in range(img.shape[1]):
+                    resized_images[j, i] = cv2.resize(img[i, j], (self.img_dim_x, self.img_dim_y))
+            
+            return torch.from_numpy(resized_images).float().permute(0, 1, 4, 2, 3) / 255
+        return torch.from_numpy(img).float().permute(0, 1, 4, 2, 3) / 255
+
+
+    def forward(self, states:torch.Tensor, actions:torch.Tensor, returns_to_go:torch.Tensor, timesteps:torch.Tensor, attention_mask, return_dict, game_ids=None, img:bool = False):
+
+        batch_size, seq_len = states.shape[0], self.context_length
+        print("State size:", states.size())
+        print("Action size:", actions.size())
+        print(actions[0][0])
+        
+        # Embed all inputs
+        if img:
+            states = self._rescale_image(states)
+            state_embeds = self.state_encoder_image(states)
+        else:
+            state_embeds = self.state_encoder(states)
+        if actions.size(-1) != self.max_act_dim:
+            actions = F.pad(actions,(0, self.max_act_dim-actions.size(-1)))
+        action_embeds = self.action_encoder(actions)
+        rtg_embeds = self.rtg_encoder(returns_to_go)
+        time_embeds = self.timestep_encoder(timesteps)
+
+        state_embeds += time_embeds
+        action_embeds += time_embeds
+        rtg_embeds += time_embeds
+
+        # Assemble sequence
+        stacked_inputs = torch.stack((rtg_embeds, state_embeds, action_embeds), dim=1)
+        stacked_inputs = stacked_inputs.permute(0, 2, 1, 3).reshape(batch_size, 3 * seq_len, self.embedding_dim)
+        stacked_inputs = self.embed_ln(stacked_inputs)
+
+        # Create attention mask
+        stacked_mask = torch.stack((attention_mask, attention_mask, attention_mask), dim=1)
+        stacked_mask = stacked_mask.permute(0, 2, 1).reshape(batch_size, 3 * seq_len)
+        inverted_attention_mask = stacked_mask == 0
+
+        # Transformer forward pass
+        x = self.transformer(stacked_inputs, src_key_padding_mask=inverted_attention_mask)
+        x = self.predict_ln(x)
+
+        # Reshape and get predictions
+        x = x.reshape(batch_size, seq_len, 3, self.embedding_dim).permute(0, 2, 1, 3)
+        state_preds = x[:,1]  # Predictions from state representations
+
+        # Game-specific predictions
+        #all_predictions = {}
+        #for head_module in self.action_heads.items():
+        #    game_preds = {}
+        #    if 'continuous' in head_module:
+        #        game_preds['continuous'] = head_module['continuous'](state_preds)
+        #    if 'discrete' in head_module:
+        #        game_preds['discrete'] = [head(state_preds) for head in head_module['discrete']]
+        #    all_predictions[gid] = game_preds
+
+        return self.he
+
+
+
 # --- 1. Data Loading and Preprocessing ---
 
 def load_data(pickle_paths,
@@ -394,7 +549,7 @@ class MultiDiscreteDecisionTransformerTrainer(Trainer):
             return_dict=True,
         )
 
-        action_preds = outputs.action_preds # Logits output by the model
+        action_preds = outputs#.action_preds # Logits output by the model
 
         # --- Align Predictions and Targets for Loss ---
         act_dim = action_preds.shape[-1]
@@ -588,8 +743,12 @@ def train(pickle_path, cumulative_rewards_in_dataset=False, model_name='decision
         max_length=CONTEXT_LENGTH,
         max_ep_len=max_ep_len, # Crucial for position embeddings
         action_tanh=False, # Should be False for discrete/one-hot actions
+        action_discrete_cardinalities = concatenated_action_dim,
+        action_continuous_dim = 0,
+
     )
-    model = DecisionTransformerModel(config)
+    #model = DecisionTransformerModel(config)
+    model = DecisionTransformerWithImage(config=config)
     model.to(DEVICE)
 
     collator = DecisionTransformerDataCollator()
@@ -725,11 +884,11 @@ def pad_dimensions(input_vector, dims):
     return np.pad(input_vector, (0,dims-input_vector.shape[0]), mode="constant", constant_values=-100)
 
 # --- Constants and Hyperparameters ---
-NUM_ACTIONS_PER_DIM = [50, 50, 50, 50, 50, 50, 50, 50, 50, 50]  # Action space for SolidGame environment
-NUM_ACTION_DIMS = 10#len(NUM_ACTIONS_PER_DIM)
-STATE_DIM = 400 # State dimension for SolidGame environment 54 continuous 7 discrete
-CONTEXT_LENGTH = 20  # K: How many steps the model sees
-TARGET_RETURN = 8.71 # Target return for evaluation
+NUM_ACTIONS_PER_DIM = [3, 3, 2]  # Action space for SolidGame environment
+NUM_ACTION_DIMS = len(NUM_ACTIONS_PER_DIM)
+STATE_DIM = 81 # State dimension for SolidGame environment 54 continuous 7 discrete
+CONTEXT_LENGTH = 5  # K: How many steps the model sees
+# TARGET_RETURN = 8.71 # Target return for evaluation
 PICK_BEST = 100
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # Root path for server
@@ -761,11 +920,8 @@ if __name__ == "__main__":
     # Set cumulative_rewards_in_dataset=False if 'rewards' is per-step reward
     CUMULATIVE_REWARDS = True if reward_type == 'score' else False
     
-    #dataset_path = os.path.join("examples", "Agents", data_from, "datasets", f"{data_from}_{label}_{reward_type}_moreTrained.pkl") 
-    dataset_paths = ["MultiEnvironmentProject/Database/solid_test_dataset.pkl","MultiEnvironmentProject/Database/pirates_test_dataset.pkl"]
-    #DIR_PATH = os.path.join("examples", "Agents", "DT")
-    DIR_PATH = "MultiEnvironmentProject/Agents/DT"
-    # dataset_path = os.path.join("examples", "Agents", data_from, "datasets", f"testing_dataset.pkl")
+    DIR_PATH = os.path.join("agents", "game_obs", "DT")
+    dataset_path = os.path.join("Random", f"solid_test_dataset.pkl")
     
     for dataset_path in dataset_paths:
         if running_on_server:

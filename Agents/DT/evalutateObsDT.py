@@ -9,9 +9,10 @@ import logging
 import os
 import json
 
-import imageio
-#from affectively_environments.envs.solid_game_obs import SolidEnvironmentGameObs
-#from affectively_environments.envs.base import compute_confidence_interval
+# import imageio
+
+#from affectively.environments.solid_game_obs import SolidEnvironmentGameObs
+#from affectively.environments.base import compute_confidence_interval
 from trainObsDT import plot_metrics
 import sys
 sys.path.insert(0, r"C:\Research")
@@ -331,10 +332,10 @@ def record_gif_episode(env_creator, model_path, target_rtg, gif_path="episode.gi
         print("No valid frames were captured. GIF was not saved.")
 
 
-NUM_ACTIONS_PER_DIM = [50, 50, 50, 50, 50, 50, 50, 50, 50, 50]  # <<< --- MUST BE SET CORRECTLY
-NUM_ACTION_DIMS = 10
-STATE_DIM = 400
-CONTEXT_LENGTH = 20  # K: How many steps the model sees
+NUM_ACTIONS_PER_DIM = [3, 3, 2]  # <<< --- MUST BE SET CORRECTLY
+NUM_ACTION_DIMS = len(NUM_ACTIONS_PER_DIM)
+STATE_DIM = 81
+CONTEXT_LENGTH = 5  # K: How many steps the model sees
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # --- Main Execution ---
@@ -350,7 +351,10 @@ if __name__ == "__main__":
     target_return = 17 # Target return for evaluation
     
     # name = f"{data_from}_{label}_{reward_type}_SolidObs_DT"
-    name = f"model"
+    # name = f"ODT_Optimize_14k_v300"
+    # name = f"ODT_Blended_14k_v300"
+    # name = f"ODT_Arousal_14k_v300"
+    name = "testingDT_on_newAF_final"
     
     weight = 0
 
