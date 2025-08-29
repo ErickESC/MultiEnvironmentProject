@@ -12,6 +12,7 @@ import cv2
 import itertools
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
+import pandas as pd
 
 
 # --- Configuration ---
@@ -51,7 +52,6 @@ class DecisionTransformerWithImage(nn.Module):
         self.img_dim_y = config['img_dim_y']
         self.vocab = {combo: idx for idx, combo in enumerate(list(itertools.product(*[range(s) for s in self.max_dis_act_dims])))}
         self.reverse_vocab = {idx: combo for combo, idx in self.vocab.items()}
-
         # Input embedding
         self.state_encoder = nn.Linear(self.max_state_dim, self.embedding_dim)
         self.state_encoder_image = nn.Sequential(
@@ -101,16 +101,19 @@ class DecisionTransformerWithImage(nn.Module):
     def _pad_features(self, input_tensors:torch.Tensor, tensor_type=None) -> tuple[torch.Tensor, torch.Tensor]:
         if tensor_type == "action":
             if self.max_act_dim > input_tensors.size(-1):
-                input_tensors = F.pad(input_tensors, (0, 0, 0, self.max_act_dim - input_tensors.size(-1)))
+                input_tensors = F.pad(input_tensors, (0, self.max_act_dim - input_tensors.size(-1)))
 
         elif tensor_type =="state":
             if self.max_state_dim > input_tensors.size(-1):
-                input_tensors = F.pad(input_tensors, (0, 0, 0, self.max_state_dim - input_tensors.size(-1)))
+                input_tensors = F.pad(input_tensors, (0, self.max_state_dim - input_tensors.size(-1)))
         else:
-            assert(ValueError("tensor_type was not given"))
+            ValueError("tensor_type is invalid")
         return input_tensors
 
     def _pad_sequences(self, input_tensors:list, tensor_type = None) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Tensor types: "action", "state"
+        """
         if tensor_type == "action":
             x = pad_sequence(input_tensors, batch_first=True, padding_value=0)
             mask = torch.cat([
@@ -125,7 +128,7 @@ class DecisionTransformerWithImage(nn.Module):
                 torch.zeros(x.size(0), self.max_state_dim - input_tensors.size(-1), dtype=torch.bool)
             ], dim=1)
         else:
-            assert(ValueError("tensor_type was not given"))
+            assert(ValueError("tensor_type is invalid"))
 
         return x, mask
 
@@ -144,7 +147,7 @@ class DecisionTransformerWithImage(nn.Module):
 
     def forward(self, states, actions, returns_to_go, timesteps,horizon=1, game_ids=None, img:bool = False):
         """
-        States, actions, returns_to_go and timesteps are expected to be a list numpy arrays
+        States and actions are expected to be a list of lists of np arrays eg.: [[np.arr([1,2,3])]]
         """
         #actions and states are a list of lists of numpy arrays
         #rewards is a list of lists of a list of a single int/float
@@ -162,13 +165,21 @@ class DecisionTransformerWithImage(nn.Module):
         if(type(actions) == list):
             #store actions as integers if they are discrete actions, otherwise as floats if they are continous actions
             #currently doesn't accept a mixture of discrete and continous actions in a single game
-            actions = [[torch.tensor(self.vocab[tuple(list(action))],dtype=torch.int32) if np.issubdtype(action.dtype, np.integer) 
+            #actions = [[torch.tensor(self.vocab[tuple(list(action))],dtype=torch.int32) if np.issubdtype(action.dtype, np.integer) 
+            #            else torch.from_numpy(action.float())
+            #            for action in seq_actions]
+            #            for seq_actions in actions]
+            #actions = [torch.stack(action,dim=0) for action in actions]
+            #actions = torch.stack(actions,dim=0)
+
+            actions = [[torch.tensor(list(action),dtype=torch.int32) if np.issubdtype(action.dtype, np.integer) 
                         else torch.from_numpy(action.float())
                         for action in seq_actions]
                         for seq_actions in actions]
+            print(self._pad_features(actions[0][0],tensor_type="action").tolist())
+            actions = [[torch.tensor(self.vocab[tuple(self._pad_features(action,tensor_type="action").tolist())])for action in seq_actions] for seq_actions in actions]
             actions = [torch.stack(action,dim=0) for action in actions]
             actions = torch.stack(actions,dim=0)
-            
 
         if(type(returns_to_go) == list):
             returns_to_go = torch.tensor(returns_to_go,dtype=torch.float32)
@@ -185,7 +196,10 @@ class DecisionTransformerWithImage(nn.Module):
         if img:
             states = self._rescale_image(states)
         else:
+            print(states.size())
             states = self._pad_features(states, tensor_type="state")
+            print("states_padded")
+            print(states.size())
 
         actions = self._pad_features(actions, tensor_type="action")
         
@@ -233,25 +247,37 @@ class DecisionTransformerWithImage(nn.Module):
 
 if __name__ == "__main__":
     CONTEXT_LENGTH = 20
-    with open("MultiEnvironmentProject/Database/pirates_PPO_dataset.pkl", "rb") as f:
+    with open("MultiEnvironmentProject/Database/solid_PPO_dataset.pkl", "rb") as f:
         data = pickle.load(f)
+    print(type(data))
     print(data.keys())
     print(data["game"])
     print(data["comulative_reward"])
     print(data["episodes"])    
     print(data["steps_per_episode"])
-    print(data["observations"][0][0].shape)
+    print(data["observations"][0][0])
+    for i in range(len(data["observations"])):
+        for j in range(len(data["observations"][i])):
+            data["observations"][i][j] = np.array(data["observations"][i][j])
 
+
+    for i in range(len(data["actions"])):
+        for j in range(len(data["actions"][i])):
+            data["actions"][i][j] = np.array(data["actions"][i][j])
+
+
+    for i in range(100):
+        print(data["actions"][0][i])
+    print(data["observations"][0][0].shape)
     config = {
         "embedding_dim": 128,
-        "max_state_dim" : 381,
+        "max_state_dim" : 500,
         "context_length" : 600,
-        "horizon" : 2,
         "n_layer" : 3,
         "n_head" : 4,
         "max_ep_length" : 600,
-        "max_act_dim" : 3,
-        "max_dis_act_dims" : [3,2,2],
+        "max_act_dim" : 4,
+        "max_dis_act_dims" : [3,3,2,2],
         "img_dim_x" : 1,
         "img_dim_y" : 1,
         "dueling_arch": True

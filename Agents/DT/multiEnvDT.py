@@ -915,14 +915,21 @@ def load_and_process_real_data(game_configs, context_length):
 
 if __name__ == "__main__":
     CONTEXT_LENGTH = 20
-    with open("MultiEnvironmentProject/Database/pirates_PPO_dataset.pkl", "rb") as f:
+    with open("MultiEnvironmentProject/Database/solid_PPO_dataset.pkl", "rb") as f:
         data = pickle.load(f)
     print(data.keys())
     print(data["game"])
     print(data["comulative_reward"])
     print(data["episodes"])    
     print(data["steps_per_episode"])
-    print(data["observations"][0][0].shape)
+    print(data["observations"][0][0])
+    for i in range(len(data["observations"])):
+        for j in range(len(data["observations"][i])):
+            data["observations"][i][j] = np.array(data["observations"][i][j])
+
+    for i in range(len(data["actions"])):
+        for j in range(len(data["actions"][i])):
+            data["actions"][i][j] = np.array(data["actions"][i][j])
     
     #print(len(data['rewards']))
     #print(len(data['rewards'][0]))
@@ -995,6 +1002,8 @@ if __name__ == "__main__":
  # #logger.info("Starting training...")
  # #trainer.train()
  # #logger.info("Training complete!")
+    for i in range(100):
+        print(data["actions"][0][i])
     config = {
         "embedding_dim": 128,
         "max_state_dim" : 381,
@@ -1004,7 +1013,7 @@ if __name__ == "__main__":
         "n_head" : 4,
         "max_ep_length" : 600,
         "max_act_dim" : 3,
-        "max_dis_act_dims" : [3,2,2],
+        "max_dis_act_dims" : [3,3,2],
         "img_dim_x" : 1,
         "img_dim_y" : 1,
         "dueling_arch": True
