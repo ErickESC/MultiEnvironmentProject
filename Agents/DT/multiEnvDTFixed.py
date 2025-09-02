@@ -13,6 +13,7 @@ import itertools
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 import pandas as pd
+import random
 
 
 # --- Configuration ---
@@ -60,7 +61,7 @@ class DecisionTransformerWithImage(nn.Module):
             nn.Conv2d(8, 16, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
             nn.Conv2d(16, self.embedding_dim, kernel_size=3, stride=1, padding=1))
-        #self.action_encoder = nn.Linear(config.game_configs['max_act_dim'], self.embedding_dim)
+        self.action_encoder = nn.Linear(config.game_configs['max_act_dim'], self.embedding_dim)
         self.action_encoder = nn.Embedding(np.prod(self.max_dis_act_dims),self.embedding_dim)
         self.rtg_encoder = nn.Linear(1, self.embedding_dim)
         self.timestep_encoder = nn.Embedding(self.max_ep_length, self.embedding_dim)
@@ -98,7 +99,7 @@ class DecisionTransformerWithImage(nn.Module):
                 ])
 
         return head_layers
-    def _pad_features(self, input_tensors:torch.Tensor, tensor_type=None) -> tuple[torch.Tensor, torch.Tensor]:
+    def _pad_features_old(self, input_tensors:torch.Tensor, tensor_type=None) -> tuple[torch.Tensor, torch.Tensor]:
         if tensor_type == "action":
             if self.max_act_dim > input_tensors.size(-1):
                 input_tensors = F.pad(input_tensors, (0, self.max_act_dim - input_tensors.size(-1)))
@@ -107,8 +108,42 @@ class DecisionTransformerWithImage(nn.Module):
             if self.max_state_dim > input_tensors.size(-1):
                 input_tensors = F.pad(input_tensors, (0, self.max_state_dim - input_tensors.size(-1)))
         else:
-            ValueError("tensor_type is invalid")
+            raise ValueError("tensor_type is invalid")
         return input_tensors
+    def _pad_features(self,input_tensor, tensor_type:str=None):
+
+        if type(input_tensor) == list:
+            if tensor_type=="state":
+                if len(input_tensor) < self.max_state_dim:
+                    input_tensor.extend([0 for _ in range((self.max_state_dim - len(input_tensor)))])
+            elif tensor_type=="action":
+                if len(input_tensor) < self.max_act_dim:
+                    input_tensor.extend([0 for _ in range((self.max_act_dim - len(input_tensor)))])
+            else:
+                raise ValueError("Tensor type not given")
+            
+        elif type(input_tensor) == np.ndarray:
+            if tensor_type=="state":
+                if input_tensor.shape[-1] < self.max_state_dim:
+                    input_tensor = np.pad(input_tensor, (0,self.max_state_dim - input_tensor.shape[0]), mode="constant", constant_values=0)
+            elif tensor_type=="action":
+                if input_tensor.shape[-1] < self.max_act_dim:
+                    input_tensor = np.pad(input_tensor, (0,self.max_act_dim - input_tensor.shape[0]), mode="constant", constant_values=0)
+            else:
+                raise ValueError("Tensor type not given")
+
+        elif type(input_tensor) == torch.Tensor:
+            if tensor_type=="state":
+                if input_tensor.size(-1) < self.max_state_dim:
+                    input_tensors = F.pad(input_tensors, (0, self.max_state_dim - input_tensors.size(-1)))
+            elif tensor_type=="action":
+                if input_tensor.size(-1) < self.max_act_dim:
+                    input_tensors = F.pad(input_tensors, (0, self.max_act_dim - input_tensors.size(-1)))
+            else:
+                raise ValueError("Tensor type not given")
+        else:
+            raise ValueError("Unrecognized input type")
+        return input_tensor
 
     def _pad_sequences(self, input_tensors:list, tensor_type = None) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -128,7 +163,7 @@ class DecisionTransformerWithImage(nn.Module):
                 torch.zeros(x.size(0), self.max_state_dim - input_tensors.size(-1), dtype=torch.bool)
             ], dim=1)
         else:
-            assert(ValueError("tensor_type is invalid"))
+            raise ValueError("tensor_type is invalid")
 
         return x, mask
 
@@ -153,30 +188,44 @@ class DecisionTransformerWithImage(nn.Module):
         #rewards is a list of lists of a list of a single int/float
         batch_size, seq_len = len(states), len(states[0])
         
+        ##Transform states, actions, rtg, timesteps into a list of torch tensors
+        #if(type(states) == list):
+        #    print(len(states))
+        #    states = [[torch.tensor(single_state,dtype=torch.float32) for single_state in state] for state in states]
+        #    states = [[torch.tensor(self._pad_features(state,"state")) for state in seq_states] for seq_states in states]
+        #    #states = [[torch.from_numpy(single_state) for single_state in state] for state in states]
+        #    states = [torch.stack(state,dim=0) for state in states]
+        #    states = torch.stack(states,dim=0)
+#
+#
+        #if(type(actions) == list):
+#
+        #    actions = [[torch.tensor(list(action),dtype=torch.int32) if np.issubdtype(action.dtype, np.integer) 
+        #                else torch.from_numpy(action.float())
+        #                for action in seq_actions]
+        #                for seq_actions in actions]
+        #    print(self._pad_features(actions[0][0],tensor_type="action").tolist())
+        #    actions = [[torch.tensor(self.vocab[tuple(self._pad_features(action,tensor_type="action").tolist())])for action in seq_actions] for seq_actions in actions]
+        #    actions = [torch.stack(action,dim=0) for action in actions]
+        #    actions = torch.stack(actions,dim=0)
+
         #Transform states, actions, rtg, timesteps into a list of torch tensors
         if(type(states) == list):
             print(len(states))
-            states = [[torch.from_numpy(single_state) for single_state in state] for state in states]
+            #states = [[torch.tensor(single_state,dtype=torch.float32) for single_state in state] for state in states]
+            states = [[torch.tensor(self._pad_features(state,"state")) for state in seq_states] for seq_states in states]
+            #states = [[torch.from_numpy(single_state) for single_state in state] for state in states]
             states = [torch.stack(state,dim=0) for state in states]
             states = torch.stack(states,dim=0)
-            print(states.size())
 
 
         if(type(actions) == list):
-            #store actions as integers if they are discrete actions, otherwise as floats if they are continous actions
-            #currently doesn't accept a mixture of discrete and continous actions in a single game
-            #actions = [[torch.tensor(self.vocab[tuple(list(action))],dtype=torch.int32) if np.issubdtype(action.dtype, np.integer) 
+
+            #actions = [[torch.tensor(list(action),dtype=torch.int32) if np.issubdtype(action.dtype, np.integer) 
             #            else torch.from_numpy(action.float())
             #            for action in seq_actions]
             #            for seq_actions in actions]
-            #actions = [torch.stack(action,dim=0) for action in actions]
-            #actions = torch.stack(actions,dim=0)
-
-            actions = [[torch.tensor(list(action),dtype=torch.int32) if np.issubdtype(action.dtype, np.integer) 
-                        else torch.from_numpy(action.float())
-                        for action in seq_actions]
-                        for seq_actions in actions]
-            print(self._pad_features(actions[0][0],tensor_type="action").tolist())
+            #print(self._pad_features(actions[0][0],tensor_type="action").tolist())
             actions = [[torch.tensor(self.vocab[tuple(self._pad_features(action,tensor_type="action").tolist())])for action in seq_actions] for seq_actions in actions]
             actions = [torch.stack(action,dim=0) for action in actions]
             actions = torch.stack(actions,dim=0)
@@ -192,14 +241,10 @@ class DecisionTransformerWithImage(nn.Module):
         actions_mask = torch.ones(actions.size(0),actions.size(1))
         rtg_mask = torch.ones(returns_to_go.size(0),returns_to_go.size(1))
 
-        #Apply padding along the feature dimention and calculate the attention_masks for states, actions, rtg
         if img:
             states = self._rescale_image(states)
         else:
-            print(states.size())
             states = self._pad_features(states, tensor_type="state")
-            print("states_padded")
-            print(states.size())
 
         actions = self._pad_features(actions, tensor_type="action")
         
@@ -212,18 +257,14 @@ class DecisionTransformerWithImage(nn.Module):
         rtg_embeds = self.rtg_encoder(returns_to_go.float())
         time_embeds = self.timestep_encoder(timesteps)
 
-        print(state_embeds.size(), action_embeds.size(),rtg_embeds.size(),time_embeds.size())
         state_embeds += time_embeds
         state_embeds = state_embeds
         rtg_embeds += time_embeds
         rtg_embeds = rtg_embeds
         action_embeds += time_embeds
 
-
-
         # Assemble sequence
         stacked_inputs = torch.stack((rtg_embeds, state_embeds, action_embeds), dim=1)
-        print(stacked_inputs.size())
         stacked_inputs = stacked_inputs.permute(0, 2, 1, 3).reshape(batch_size, 3 * seq_len, self.embedding_dim)
         stacked_inputs = self.embed_ln(stacked_inputs)
 
@@ -242,33 +283,62 @@ class DecisionTransformerWithImage(nn.Module):
         all_predictions = self.action_heads(state_preds)
         all_predictions = F.softmax(all_predictions[:,:horizon,:],dim=0).argmax(dim=2)
         decoded = [list(self.reverse_vocab[i.item()]) for i in all_predictions.view(-1)]
-        #output = [self.vocab[all_predictions[x].item()] for x in range(batch_size)]
         return decoded
 
 if __name__ == "__main__":
     CONTEXT_LENGTH = 20
+    paths = ["MultiEnvironmentProject/Database/pirates_PPO_dataset.pkl"]
     with open("MultiEnvironmentProject/Database/solid_PPO_dataset.pkl", "rb") as f:
         data = pickle.load(f)
-    print(type(data))
-    print(data.keys())
-    print(data["game"])
-    print(data["comulative_reward"])
-    print(data["episodes"])    
-    print(data["steps_per_episode"])
-    print(data["observations"][0][0])
+
     for i in range(len(data["observations"])):
         for j in range(len(data["observations"][i])):
             data["observations"][i][j] = np.array(data["observations"][i][j])
-
 
     for i in range(len(data["actions"])):
         for j in range(len(data["actions"][i])):
             data["actions"][i][j] = np.array(data["actions"][i][j])
 
+    print(data["episodes"])
+    print(type(data["observations"]))
+    for path in paths:
+        with open(path, "rb") as f:
+            new_data =pickle.load(f)
+        for i in range(len(new_data["observations"])):
+            for j in range(len(new_data["observations"][i])):
+                new_data["observations"][i][j] = np.array(new_data["observations"][i][j])
+        for i in range(len(new_data["actions"])):
+            for j in range(len(new_data["actions"][i])):
+                new_data["actions"][i][j] = np.array(new_data["actions"][i][j])
 
-    for i in range(100):
-        print(data["actions"][0][i])
-    print(data["observations"][0][0].shape)
+        data["observations"] += new_data["observations"]
+        data["actions"] += new_data["actions"]
+        data["rewards"] += new_data["rewards"]
+
+        
+
+
+#    with open("MultiEnvironmentProject/Database/solid_PPO_dataset.pkl", "rb") as f:
+#        data = pickle.load(f)
+#    print(type(data))
+#    print(data.keys())
+#    print(data["game"])
+#    print(data["comulative_reward"])
+#    print(data["episodes"])    
+#    print(data["steps_per_episode"])
+#    print(data["observations"][0][0])
+#    #data["observations"] = np.array(data["observations"])
+#    
+#    for i in range(len(data["observations"])):
+#        for j in range(len(data["observations"][i])):
+#            data["observations"][i][j] = np.array(data["observations"][i][j])
+#    #print(data["observations"][0])
+#    for i in range(len(data["actions"])):
+#        for j in range(len(data["actions"][i])):
+#            data["actions"][i][j] = np.array(data["actions"][i][j])
+
+
+    
     config = {
         "embedding_dim": 128,
         "max_state_dim" : 500,
@@ -282,11 +352,16 @@ if __name__ == "__main__":
         "img_dim_y" : 1,
         "dueling_arch": True
         }
+    random.seed(42)
+    random.shuffle(data["observations"])
+    random.shuffle(data["actions"])
+    random.shuffle(data["rewards"])
+    print("num of obs:",len(data["observations"]))
     model=DecisionTransformerWithImage(config=config)
-    states = data["observations"][:5]
-    actions = data["actions"][:5]
-    returns_to_go = data["rewards"][:5]
-    timesteps = [[x for x in range(600)] for _ in range(5)]
+    states = data["observations"][:2]
+    actions = data["actions"][:2]
+    returns_to_go = data["rewards"][:2]
+    timesteps = [[x for x in range(600)] for _ in range(len(states))]
 
 
     print(model(states=states,
