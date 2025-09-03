@@ -408,13 +408,21 @@ def unflatten_action(flat_index, action_space):
         
     return action
 
-def train_model(model, train_loader, val_loader, num_epochs, learning_rate, model_dir):
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
+def train_model(model, optimizer, train_loader, val_loader, num_epochs, model_dir, start_epoch=0):
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.9)
-    
     best_val_loss = float('inf')
     train_losses = []
     val_losses = []
+    
+    # Try to load previous best_val_loss if it exists
+    if start_epoch > 0:
+        try:
+            with open(os.path.join(model_dir, "training_state.json"), "r") as f:
+                state = json.load(f)
+                best_val_loss = state.get("best_val_loss", float('inf'))
+                logger.info(f"Resuming with best validation loss of {best_val_loss:.4f}")
+        except FileNotFoundError:
+            logger.warning("Could not find training_state.json. Starting with best_val_loss = inf.")
     
     for epoch in range(num_epochs):
         # Training
@@ -455,7 +463,6 @@ def train_model(model, train_loader, val_loader, num_epochs, learning_rate, mode
             loss = loss / len(games)  # Average loss across games in the batch
             loss.backward()
             optimizer.step()
-            
             train_loss += loss.item()
             
             if batch_idx % 100 == 0:
@@ -500,11 +507,26 @@ def train_model(model, train_loader, val_loader, num_epochs, learning_rate, mode
         
         logger.info(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
         
-        # Save best model
+        # --- Save Checkpoint ---
+        checkpoint_path = os.path.join(model_dir, "latest_checkpoint.pt")
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'loss': val_loss,
+        }, checkpoint_path)
+        logger.info(f"Saved latest checkpoint to {checkpoint_path}")
+
+        # Save best model based on validation loss
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            torch.save(model.state_dict(), os.path.join(model_dir, "best_model.pt"))
-            logger.info(f"Saved best model with val loss: {val_loss:.4f}")
+            best_model_path = os.path.join(model_dir, "best_model.pt")
+            torch.save(model.state_dict(), best_model_path)
+            logger.info(f"New best model saved to {best_model_path} with val loss: {val_loss:.4f}")
+            
+            # Save the best loss value for resuming
+            with open(os.path.join(model_dir, "training_state.json"), "w") as f:
+                json.dump({"best_val_loss": best_val_loss}, f)
         
         scheduler.step()
     
@@ -533,6 +555,10 @@ def main():
     num_epochs = 30
     learning_rate = 1e-4
     
+    resume_checkpoint = False
+    use_pretrained = False
+    pretrained_path = "path_to_pretrained_model.pt"
+    
     # Define game configurations
     game_configs = {
         "solid": GameConfig(
@@ -558,6 +584,11 @@ def main():
         "agents\\game_obs\\DT\\Datasets\\pirates\\pirates_PPO_Optimize_Cluster0_Run4_dataset.pkl",
         "agents\\game_obs\\DT\\Datasets\\solid\\solid_PPO_Optimize_Cluster0_Run10_dataset.pkl"
     ]
+    
+    for path in pickle_paths:
+        if not os.path.exists(path):
+            logger.error(f"Dataset file not found: {path}. Please ensure the dataset files are available.")
+            raise SystemExit(f"Dataset file not found: {path}. Please ensure the dataset files are available.")
     
     # Create model directory
     model_dir = "agents\\game_obs\\DT\\MultiGame\\Results\\MultiGame_DT_v1"
@@ -598,9 +629,36 @@ def main():
     model = MultiGameDecisionTransformer(
         game_configs, hidden_size, n_layer, n_head, dropout
     ).to(DEVICE)
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     
-    # Train model
-    train_model(model, train_loader, val_loader, num_epochs, learning_rate, model_dir)
+    start_epoch = 0
+    if resume_checkpoint:
+        checkpoint_path = os.path.join(model_dir, "latest_checkpoint.pt")
+        if os.path.exists(checkpoint_path):
+            logger.info(f"Resuming training")
+            checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            start_epoch = checkpoint['epoch'] + 1
+            logger.info(f"Loaded model and optimizer. Starting from epoch {start_epoch}")
+            train_model(model, optimizer, train_loader, val_loader, num_epochs, model_dir, start_epoch=start_epoch)
+        else:
+            logger.error(f"Checkpoint file not found: {checkpoint_path}. Cancelling execution.")
+            raise SystemExit(f"Checkpoint file not found: {checkpoint_path}. Cancelling execution.")
+    elif use_pretrained:
+        if os.path.exists(pretrained_path):
+            logger.info(f"Loading pretrained model from {pretrained_path}")
+            # Create model directory
+            new_model_dir = os.path.join(model_dir, "fine_tuned")
+            os.makedirs(new_model_dir, exist_ok=True)
+            model.load_state_dict(torch.load(pretrained_path, map_location=DEVICE))
+            train_model(model, optimizer, train_loader, val_loader, num_epochs, new_model_dir)
+        else:
+            logger.error(f"Pretrained model file not found: {pretrained_path}. Cancelling execution.")
+            raise SystemExit(f"Pretrained model file not found: {pretrained_path}. Cancelling execution.")
+    else:
+        logger.info("Starting training from scratch.")
+        train_model(model, optimizer, train_loader, val_loader, num_epochs, model_dir)
 
 if __name__ == "__main__":
     main()
