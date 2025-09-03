@@ -555,9 +555,14 @@ def main():
     num_epochs = 30
     learning_rate = 1e-4
     
+    # Create model directory
+    model_dir = "agents\\game_obs\\DT\\MultiGame\\Results\\MultiGame_DT_v1"
+    os.makedirs(model_dir, exist_ok=True)
+    
+    # Options for resuming or using pretrained
     resume_checkpoint = False
     use_pretrained = False
-    pretrained_path = "path_to_pretrained_model.pt"
+    pretrained_path = "agents\\game_obs\\DT\\MultiGame\\Results\\MultiGame_DT_v1\\best_model.pt"
     
     # Define game configurations
     game_configs = {
@@ -589,10 +594,6 @@ def main():
         if not os.path.exists(path):
             logger.error(f"Dataset file not found: {path}. Please ensure the dataset files are available.")
             raise SystemExit(f"Dataset file not found: {path}. Please ensure the dataset files are available.")
-    
-    # Create model directory
-    model_dir = "agents\\game_obs\\DT\\MultiGame\\Results\\MultiGame_DT_v1"
-    os.makedirs(model_dir, exist_ok=True)
     
     # Save game configs
     with open(os.path.join(model_dir, "game_configs.json"), "w") as f:
