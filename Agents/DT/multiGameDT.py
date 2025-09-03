@@ -149,13 +149,10 @@ def multi_game_collate_fn(batch):
     """
     # Find max dimensions across all games
     max_obs_dim = max(item['states'].shape[1] for item in batch)
-    # max_action_dim = max(item['actions'].shape[1] for item in batch)
     
     games = [item['game'] for item in batch]
     
     # Pad states and actions to max dimensions
-    padded_states = []
-    
     padded_states = []
     
     for item in batch:
