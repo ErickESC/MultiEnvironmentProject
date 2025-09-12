@@ -11,8 +11,13 @@ import json
 
 # import imageio
 
+<<<<<<< HEAD
 #from affectively.environments.solid_game_obs import SolidEnvironmentGameObs
 #from affectively.environments.base import compute_confidence_interval
+=======
+from affectively.environments.solid_game_obs import SolidEnvironmentGameObs
+from affectively.environments.base import compute_confidence_interval
+>>>>>>> f59ce61b5d12296e7057423866c67c5c2795460f
 from trainObsDT import plot_metrics
 import sys
 sys.path.insert(0, r"C:\Research")
@@ -348,7 +353,9 @@ if __name__ == "__main__":
     data_from = 'PPO'
     # data_from = 'Explore'
     
-    target_return = 17 # Target return for evaluation
+    # Target return for evaluation
+    target_return = 7000
+    # target_return = 17
     
     # name = f"{data_from}_{label}_{reward_type}_SolidObs_DT"
     # name = f"ODT_Optimize_14k_v300"
@@ -356,7 +363,7 @@ if __name__ == "__main__":
     # name = f"ODT_Arousal_14k_v300"
     name = "testingDT_on_newAF_final"
     
-    weight = 0
+    weight = 0.5
 
     if weight == 0:
         label = 'Optimize'
@@ -365,19 +372,36 @@ if __name__ == "__main__":
     else:
         label = 'Arousal'
     
-    discretize=False
+    discretize=0
     
     if data_from == 'Explore':
-        discretize=True
+        discretize=1
     
     # Set the path to the saved model artifacts
+<<<<<<< HEAD
     final_model_path = f"MultiEnvironmentProject/Agents/DT/Results/Explore_Blended_blended_moreTrained_DT_final"
+=======
+    final_model_path = f"agents\\game_obs\\DT\\Results\\{name}"
+>>>>>>> f59ce61b5d12296e7057423866c67c5c2795460f
     # final_model_path = f"examples\\Agents\\DT\\Results\\Explore_Blended_moreTrained_DT"
+    # final_model_path = f"examples\\Agents\\DT\\Results\\preTrained\\PPO_Optimize_score_SolidObs_DT_final"
     
     print(f'Starting to evaluate {name}')
     
     def create_env():
+<<<<<<< HEAD
         env = SolidEnvironmentGameObs(0, graphics=False, weight=weight, discretize=discretize, cluster=None, target_arousal=0,period_ra=1)
+=======
+        env = SolidEnvironmentGameObs(
+                    id_number=0,
+                    weight=0,
+                    graphics=True,
+                    cluster=0,
+                    target_arousal=0,
+                    period_ra=0,
+                    discretize=0
+                )
+>>>>>>> f59ce61b5d12296e7057423866c67c5c2795460f
         sideChannel = env.customSideChannel
         env.targetSignal = np.ones
         return env
@@ -387,11 +411,11 @@ if __name__ == "__main__":
         env_creator=create_env,
         model_path=final_model_path,
         target_rtg=target_return,
-        num_episodes=30
+        num_episodes=10
     )
     
     print(f"Best Score: {compute_confidence_interval(scores)}, Mean Arousal: {compute_confidence_interval(arousal)}")
-    print(f'Done evaluating {name}')
+    print(f'Done evaluating {name} in {label}')
     
     # --- Record a GIF of one episode ---
     # record_gif_episode(
