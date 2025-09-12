@@ -11,10 +11,19 @@ import json
 
 # import imageio
 
+<<<<<<< HEAD
+#from affectively.environments.solid_game_obs import SolidEnvironmentGameObs
+#from affectively.environments.base import compute_confidence_interval
+=======
 from affectively.environments.solid_game_obs import SolidEnvironmentGameObs
 from affectively.environments.base import compute_confidence_interval
+>>>>>>> f59ce61b5d12296e7057423866c67c5c2795460f
 from trainObsDT import plot_metrics
-
+import sys
+sys.path.insert(0, r"C:\Research")
+sys.path.insert(0,r"C:\Research\AffectivelyFramework")
+from AffectivelyFramework.affectively.environments.solid_game_obs import SolidEnvironmentGameObs
+from AffectivelyFramework.affectively.environments.base import compute_confidence_interval
 # --- Configuration ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -369,13 +378,20 @@ if __name__ == "__main__":
         discretize=1
     
     # Set the path to the saved model artifacts
+<<<<<<< HEAD
+    final_model_path = f"MultiEnvironmentProject/Agents/DT/Results/Explore_Blended_blended_moreTrained_DT_final"
+=======
     final_model_path = f"agents\\game_obs\\DT\\Results\\{name}"
+>>>>>>> f59ce61b5d12296e7057423866c67c5c2795460f
     # final_model_path = f"examples\\Agents\\DT\\Results\\Explore_Blended_moreTrained_DT"
     # final_model_path = f"examples\\Agents\\DT\\Results\\preTrained\\PPO_Optimize_score_SolidObs_DT_final"
     
     print(f'Starting to evaluate {name}')
     
     def create_env():
+<<<<<<< HEAD
+        env = SolidEnvironmentGameObs(0, graphics=False, weight=weight, discretize=discretize, cluster=None, target_arousal=0,period_ra=1)
+=======
         env = SolidEnvironmentGameObs(
                     id_number=0,
                     weight=0,
@@ -385,6 +401,7 @@ if __name__ == "__main__":
                     period_ra=0,
                     discretize=0
                 )
+>>>>>>> f59ce61b5d12296e7057423866c67c5c2795460f
         sideChannel = env.customSideChannel
         env.targetSignal = np.ones
         return env
