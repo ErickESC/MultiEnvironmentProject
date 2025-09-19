@@ -2,11 +2,16 @@ import torch
 import torch.nn as nn
 import numpy as np
 import os
+import sys
 import json
 from typing import Dict, List, Any, Tuple
 import logging
 from trainMoE import MultiGameDecisionTransformer, GameConfig, DEVICE, unflatten_action
 
+sys.path.append("C:/Research/AffectivelyFramework/")
+sys.path.append("C:/Research/AffectivelyFramework/affectively/")
+sys.path.append("C:/Research/")
+import affectively
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -156,34 +161,34 @@ class MultiGameDTEvaluator:
 
 def main():
     # Configuration
-    model_path = "agents\\game_obs\\DT\\MultiGame\\Results\\MoE\\best_model_MoE.pt"
-    game_configs_path = "agents\\game_obs\\DT\\MultiGame\\Results\\MultiGame_DT_v1\\game_configs.json"
+    model_path = "agents/game_obs/DT/MultiGame/Results/MultiGame_DT_v2/best_model.pt"
+    game_configs_path = "agents/game_obs/DT/MultiGame/Results/MultiGame_DT_v1/game_configs.json"
     
     # Initialize evaluator
     evaluator = MultiGameDTEvaluator(model_path, game_configs_path)
     
     # Example usage for Solid game
-    # try:
-    #     from affectively.environments.solid_game_obs import SolidEnvironmentGameObs
-        
-    #     env = SolidEnvironmentGameObs(
-    #         id_number=0,
-    #         weight=0,
-    #         graphics=True,
-    #         cluster=0,
-    #         target_arousal=0,
-    #         period_ra=0,
-    #         discretize=0
-    #     )
-        
-    #     mean_return, std_return, returns = evaluator.evaluate_online(
-    #         env, "solid", target_rtg=16.5, num_episodes=5
-    #     )
-        
-    #     logger.info(f"Solid Game - Mean Return: {mean_return:.2f}, Std: {std_return:.2f}")
-        
-    # except ImportError:
-    #     logger.warning("Solid environment not available, skipping evaluation")
+    #try:
+    #    from affectively.environments.solid_game_obs import SolidEnvironmentGameObs
+    #  
+    #    env = SolidEnvironmentGameObs(
+    #        id_number=0,
+    #        weight=0,
+    #        graphics=True,
+    #        cluster=0,
+    #        target_arousal=0,
+    #        period_ra=0,
+    #        discretize=0
+    #    )
+    #  
+    #    mean_return, std_return, returns = evaluator.evaluate_online(
+    #        env, "solid", target_rtg=16.5, num_episodes=5
+    #    )
+    #  
+    #    logger.info(f"Solid Game - Mean Return: {mean_return:.2f}, Std: {std_return:.2f}")
+    #  
+    #except ImportError:
+    #    logger.warning("Solid environment not available, skipping evaluation")
     
     # Example usage for Pirates game
     try:
