@@ -400,11 +400,9 @@ def unflatten_action(flat_index, action_space):
         
     return action
 
-def train_model(model, optimizer, train_loaders, val_loaders, num_epochs, model_dir, start_epoch=0):
+def train_model(model, optimizer, train_loader, val_loader, num_epochs, model_dir, start_epoch=0):
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.9)
     best_val_loss = float('inf')
-    train_losses = []
-    val_losses = []
     
     # Try to load previous best_val_loss if it exists
     if start_epoch > 0:
@@ -416,19 +414,13 @@ def train_model(model, optimizer, train_loaders, val_loaders, num_epochs, model_
         except FileNotFoundError:
             logger.warning("Could not find training_state.json. Starting with best_val_loss = inf.")
 
-    game_names = list(train_loaders.keys())
-
     for epoch in range(start_epoch, num_epochs):
-        # --- Determine which game to train this epoch ---
-        game_to_train = game_names[epoch % len(game_names)]
-        current_train_loader = train_loaders[game_to_train]
+        logger.info(f"--- Starting Epoch {epoch+1}/{num_epochs} ---")
         
-        logger.info(f"--- Starting Epoch {epoch+1}/{num_epochs} | Training on game: {game_to_train} ---")
-        
-        # --- Training on a single game for the whole epoch ---
+        # --- Training on mixed-game batches ---
         model.train()
         train_loss = 0
-        for batch_idx, batch in enumerate(current_train_loader):
+        for batch_idx, batch in enumerate(train_loader):
             games = batch['game']
             states = batch['states'].to(DEVICE)
             actions = batch['actions'].to(DEVICE)
@@ -456,12 +448,11 @@ def train_model(model, optimizer, train_loaders, val_loaders, num_epochs, model_
             train_loss += loss.item()
             
             if batch_idx % 100 == 0:
-                logger.info(f"  Batch {batch_idx}/{len(current_train_loader)}, Loss: {loss.item():.4f}")
+                logger.info(f"  Batch {batch_idx}/{len(train_loader)}, Loss: {loss.item():.4f}")
         
-        train_loss /= len(current_train_loader)
-        train_losses.append(train_loss)
+        train_loss /= len(train_loader)
         
-        # --- Validation on ALL games after each training epoch ---
+        # --- Validation on mixed-game batches ---
         model.eval()
         val_loss = 0
         total_val_batches = sum(len(loader) for loader in val_loaders.values())
@@ -469,35 +460,35 @@ def train_model(model, optimizer, train_loaders, val_loaders, num_epochs, model_
             logger.warning("No validation batches found. Skipping validation.")
             continue # Skip validation if no data
 
+        model.eval()
+        val_loss = 0
         with torch.no_grad():
-            for game_name, val_loader in val_loaders.items():
-                for batch in val_loader:
-                    games = batch['game']
-                    states = batch['states'].to(DEVICE)
-                    actions = batch['actions'].to(DEVICE)
-                    returns_to_go = batch['returns_to_go'].to(DEVICE)
-                    timesteps = batch['timesteps'].squeeze(-1).to(DEVICE)
-                    attention_mask = batch['attention_mask'].to(DEVICE)
-                    targets = batch['targets'].to(DEVICE)
+            for batch in val_loader:
+                games = batch['game']
+                states = batch['states'].to(DEVICE)
+                actions = batch['actions'].to(DEVICE)
+                returns_to_go = batch['returns_to_go'].to(DEVICE)
+                timesteps = batch['timesteps'].squeeze(-1).to(DEVICE)
+                attention_mask = batch['attention_mask'].to(DEVICE)
+                targets = batch['targets'].to(DEVICE)
                     
-                    action_preds = model(
-                        games, states, actions, returns_to_go, timesteps, attention_mask
-                    )
+                action_preds = model(
+                    games, states, actions, returns_to_go, timesteps, attention_mask
+                )
                     
-                    batch_loss = 0
-                    for i, game in enumerate(games):
-                        game_config = model.game_configs[game]
-                        pred_logits = action_preds[i, :game_config.action_dim].unsqueeze(0)
-                        target_label = targets[i].unsqueeze(0)
-                        batch_loss += F.cross_entropy(pred_logits, target_label)
+                batch_loss = 0
+                for i, game in enumerate(games):
+                    game_config = model.game_configs[game]
+                    pred_logits = action_preds[i, :game_config.action_dim].unsqueeze(0)
+                    target_label = targets[i].unsqueeze(0)
+                    batch_loss += F.cross_entropy(pred_logits, target_label)
                     
-                    batch_loss = batch_loss / len(games)
-                    val_loss += batch_loss.item()
+                batch_loss = batch_loss / len(games)
+                val_loss += batch_loss.item()
         
-        val_loss /= total_val_batches
-        val_losses.append(val_loss)
+        val_loss /= len(val_loader)
         
-        logger.info(f"Epoch {epoch+1}/{num_epochs} Summary | Train Loss ({game_to_train}): {train_loss:.4f} | Validation Loss (All Games): {val_loss:.4f}")
+        logger.info(f"Epoch {epoch+1}/{num_epochs} Summary | Train Loss: {train_loss:.4f} | Validation Loss: {val_loss:.4f}")
         
         # --- Save Checkpoint ---
         checkpoint_path = os.path.join(model_dir, "latest_checkpoint.pt")
@@ -596,42 +587,30 @@ def main():
     
     # Split into train and validation
     split_idx = int(len(episodes) * 0.9)
-    train_episodes_all = episodes[:split_idx]
-    val_episodes_all = episodes[split_idx:]
+    train_episodes = episodes[:split_idx]
+    val_episodes = episodes[split_idx:]
     
-    # --- Create game-specific datasets and dataloaders ---
-    train_loaders = {}
-    val_loaders = {}
-    game_names = list(game_configs.keys())
-    
-    for game_name in game_names:
-        # Filter episodes for the current game
-        train_episodes_game = [ep for ep in train_episodes_all if ep and ep[0]['game'] == game_name]
-        val_episodes_game = [ep for ep in val_episodes_all if ep and ep[0]['game'] == game_name]
+   # Create a SINGLE unified dataset and dataloader for all games
+    logger.info("Creating unified training dataset...")
+    train_dataset = MultiGameDataset(train_episodes, context_length, game_configs)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=multi_game_collate_fn
+    )
 
-        if not train_episodes_game:
-            logger.warning(f"No training episodes found for game: {game_name}. Skipping.")
-            continue
+    logger.info("Creating unified validation dataset...")
+    val_dataset = MultiGameDataset(val_episodes, context_length, game_configs)
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=multi_game_collate_fn
+    )
 
-        # Create dataset for the specific game
-        train_dataset_game = MultiGameDataset(train_episodes_game, context_length, game_configs)
-        val_dataset_game = MultiGameDataset(val_episodes_game, context_length, game_configs)
-
-        # Create dataloader for the specific game
-        train_loaders[game_name] = DataLoader(
-            train_dataset_game,
-            batch_size=batch_size,
-            shuffle=True,
-            collate_fn=multi_game_collate_fn
-        )
-        val_loaders[game_name] = DataLoader(
-            val_dataset_game,
-            batch_size=batch_size,
-            shuffle=False,
-            collate_fn=multi_game_collate_fn
-        )
-    
-    logger.info(f"Created {len(train_loaders)} game-specific training dataloaders.")
+    logger.info(f"Created a single training dataloader with {len(train_dataset)} samples.")
+    logger.info(f"Created a single validation dataloader with {len(val_dataset)} samples.")
     
     # Create model
     model = MultiGameDecisionTransformer(
@@ -649,7 +628,7 @@ def main():
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             start_epoch = checkpoint['epoch'] + 1
             logger.info(f"Loaded model and optimizer. Starting from epoch {start_epoch}")
-            train_model(model, optimizer, train_loaders, val_loaders, num_epochs, model_dir, start_epoch=start_epoch)
+            train_model(model, optimizer, train_loader, val_loader, num_epochs, model_dir, start_epoch=start_epoch)
         else:
             logger.error(f"Checkpoint file not found: {checkpoint_path}. Cancelling execution.")
             raise SystemExit(f"Checkpoint file not found: {checkpoint_path}. Cancelling execution.")
@@ -660,13 +639,13 @@ def main():
             new_model_dir = os.path.join(model_dir, "fine_tuned")
             os.makedirs(new_model_dir, exist_ok=True)
             model.load_state_dict(torch.load(pretrained_path, map_location=DEVICE))
-            train_model(model, optimizer, train_loaders, val_loaders, num_epochs, new_model_dir)
+            train_model(model, optimizer, train_loader, val_loader, num_epochs, new_model_dir)
         else:
             logger.error(f"Pretrained model file not found: {pretrained_path}. Cancelling execution.")
             raise SystemExit(f"Pretrained model file not found: {pretrained_path}. Cancelling execution.")
     else:
         logger.info("Starting training from scratch.")
-        train_model(model, optimizer, train_loaders, val_loaders, num_epochs, model_dir)
+        train_model(model, optimizer, train_loader, val_loader, num_epochs, model_dir)
 
 if __name__ == "__main__":
     main()
