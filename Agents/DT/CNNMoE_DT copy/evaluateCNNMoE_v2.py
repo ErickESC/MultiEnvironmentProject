@@ -6,7 +6,7 @@ import sys
 import json
 from typing import Dict, List, Any, Tuple
 import logging
-from trainMoE import MultiGameDecisionTransformer, GameConfig, DEVICE, unflatten_action
+from trainCNNMoE_v2 import MultiGameDecisionTransformer, GameConfig, DEVICE, unflatten_action
 
 sys.path.append("C:/Research/AffectivelyFramework/")
 sys.path.append("C:/Research/AffectivelyFramework/affectively/")
@@ -161,13 +161,13 @@ class MultiGameDTEvaluator:
 
 def main():
     # Configuration
-    model_path = "agents/game_obs/DT/MultiGame/Results/MultiGame_DT_v2/best_model_MoE.pt"
+    model_path = "agents/game_obs/DT/MultiGame/Results/MG_DT_v2/best_model_MoE.pt"
     game_configs_path = "agents/game_obs/DT/MultiGame/Results/MultiGame_DT_v1/game_configs.json"
     
     # Initialize evaluator
     evaluator = MultiGameDTEvaluator(model_path, game_configs_path)
     
-    #Example usage for Solid game
+    # Example usage for Solid game
     try:
         from affectively.environments.solid_game_obs import SolidEnvironmentGameObs
       

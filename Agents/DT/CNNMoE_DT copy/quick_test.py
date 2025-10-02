@@ -6,7 +6,7 @@ import sys
 import json
 from typing import Dict, List, Any, Tuple
 import logging
-from trainMoE import MultiGameDecisionTransformer, GameConfig, DEVICE, unflatten_action
+from trainCNNMoE_v2 import MultiGameDecisionTransformer, GameConfig, DEVICE, unflatten_action
 
 sys.path.append("C:/Research/AffectivelyFramework/")
 sys.path.append("C:/Research/AffectivelyFramework/affectively/")
@@ -37,12 +37,18 @@ class MultiGameDTEvaluator:
             self.game_configs, hidden_size, n_layer, n_head, dropout, experts=True, num_of_features=10
         ).to(DEVICE)
         
-        # Load model weights
-        self.model.load_state_dict(torch.load(model_path, map_location=DEVICE))
-        self.model.eval()
-        
-        logger.info(f"Loaded model from {model_path}")
+        ## Load model weights
+        #self.model.load_state_dict(torch.load(model_path, map_location=DEVICE))
+        #self.model.eval()
+        #
+        #logger.info(f"Loaded model from {model_path}")
     
+    def quick_test(self):
+        #games, states, actions, returns_to_go, timesteps, attention_mask=None
+        print(self.game_configs)
+        timesteps = [[i for i in range(63)]]
+
+        print(self.model(["solid"],torch.rand(1,64, 3,250,250),torch.randint(0,3,(1,64,1)),torch.rand(1,64,1),torch.tensor(timesteps)))
     def evaluate_online(self, env, game_name, target_rtg, num_episodes=10):
         if game_name not in self.game_configs:
             raise ValueError(f"Game {game_name} not found in config")
@@ -161,31 +167,29 @@ class MultiGameDTEvaluator:
 
 def main():
     # Configuration
-    model_path = "agents/game_obs/DT/MultiGame/Results/MultiGame_DT_v2/best_model_MoE.pt"
+    model_path = "agents/game_obs/DT/MultiGame/Results/MG_DT_v2/best_model_MoE.pt"
     game_configs_path = "agents/game_obs/DT/MultiGame/Results/MultiGame_DT_v1/game_configs.json"
     
     # Initialize evaluator
     evaluator = MultiGameDTEvaluator(model_path, game_configs_path)
     
-    #Example usage for Solid game
+    # Example usage for Solid game
     try:
-        from affectively.environments.solid_game_obs import SolidEnvironmentGameObs
+        #from affectively.environments.solid_game_obs import SolidEnvironmentGameObs
+      #
+        #env = SolidEnvironmentGameObs(
+        #    id_number=0,
+        #    weight=0,
+        #    graphics=True,
+        #    cluster=0,
+        #    target_arousal=0,
+        #    period_ra=0,
+        #    discretize=0
+        #)
       
-        env = SolidEnvironmentGameObs(
-            id_number=0,
-            weight=0,
-            graphics=True,
-            cluster=0,
-            target_arousal=0,
-            period_ra=0,
-            discretize=0
-        )
+        evaluator.quick_test()
       
-        mean_return, std_return, returns = evaluator.evaluate_online(
-            env, "solid", target_rtg=16.5, num_episodes=5
-        )
-      
-        logger.info(f"Solid Game - Mean Return: {mean_return:.2f}, Std: {std_return:.2f}")
+       # logger.info(f"Solid Game - Mean Return: {mean_return:.2f}, Std: {std_return:.2f}")
       
     except ImportError:
         logger.warning("Solid environment not available, skipping evaluation")
