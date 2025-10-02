@@ -310,7 +310,7 @@ class MultiGameDecisionTransformer(nn.Module):
             action_indices = actions[i].long().squeeze(-1)
             action_embs[i] = self.action_embeddings[game](action_indices)
 
-        state_embs = self.img_observation_embeddings(self._standardize_image(states))
+        state_embs = self.img_observation_embeddings(self._standardize_image(seq_length,states))
         # Remove extra dimension if present
         if returns_to_go.dim() == 3 and returns_to_go.shape[-1] == 1:
             returns_to_go = returns_to_go.squeeze(-1)
@@ -348,12 +348,12 @@ class MultiGameDecisionTransformer(nn.Module):
         
         return state_preds, action_preds, return_preds
     
-    def _standardize_image(self, x:torch.Tensor):
+    def _standardize_image(self,sequence_len, x:torch.Tensor):
         print(x.size())
         if x.ndim > 3:
-            if x.size(3) != self.image_dim_y or x.size(4) != self.image_dim_x:
-                x = F.interpolate(x, size=(self.image_dim_y, self.image_dim_x), mode='bilinear', align_corners=False)
             x = x.permute(0,2,1,3,4)
+            if x.size(3) != self.image_dim_y or x.size(4) != self.image_dim_x:
+                x = F.interpolate(x, size=(sequence_len,self.image_dim_y, self.image_dim_x), mode='trilinear', align_corners=False)
         return x
 
 
