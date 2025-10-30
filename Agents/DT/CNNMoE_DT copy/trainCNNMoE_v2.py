@@ -248,8 +248,9 @@ class MultiGameDecisionTransformer(nn.Module):
                 nn.Linear(config.observation_dim, hidden_size),
                 nn.ReLU()
             )
+
         self.img_observation_embeddings = VisionTransformer(self.image_dim_x,50,3,hidden_dim=hidden_size,depth=8,num_heads=4,mlp_dim=256)
-        
+
         # Action embeddings - one for each game
         self.action_embeddings = nn.ModuleDict()
         for game_name, config in game_configs.items():
@@ -324,8 +325,8 @@ class MultiGameDecisionTransformer(nn.Module):
         timestep_embs = self.timestep_embedding(timesteps)  # (batch_size, seq_length, hidden_size)
         state_time_embeds = state_embs + timestep_embs
 
-        state_time_embeds = self.state_multi_head(state_embs)
-        state_time_embeds = self.state_moe(state_embs)
+        state_time_embeds = self.state_multi_head(state_time_embeds)
+        state_time_embeds = self.state_moe(state_time_embeds)
         combined_embeds = self.moe_add_norm(state_time_embeds, self.action_norm(action_embs), self.returns_norm(return_embs),self.games_norm(game_embs))
         combined_embeds = self.all_multi_head(combined_embeds)
         output = self.all_feed_forward(combined_embeds)
@@ -355,139 +356,6 @@ class MultiGameDecisionTransformer(nn.Module):
             if x.size(3) != self.image_dim_y or x.size(4) != self.image_dim_x:
                 x = F.interpolate(x, size=(sequence_len,self.image_dim_y, self.image_dim_x), mode='trilinear', align_corners=False)
         return x
-
-
-
-        
-class MultiGameDecisionTransformer_old(nn.Module):
-    def __init__(self, game_configs: Dict[str, GameConfig], hidden_size: int = 128, 
-                 n_layer: int = 3, n_head: int = 4, dropout: float = 0.1, experts:bool = False, num_of_features:int = 10):
-        super().__init__()
-        
-        self.game_configs = game_configs
-        self.game_names = list(game_configs.keys())
-        self.num_games = len(game_configs)
-        self.hidden_size = hidden_size
-        self.num_of_features = num_of_features
-        self.experts = experts
-        
-        self.max_action_dim = max(cfg.action_dim for cfg in self.game_configs.values())
-        # Game embedding
-        self.game_embedding = nn.Embedding(self.num_games, hidden_size)
-        self.expert_router = nn.Linear(hidden_size, num_of_features)
-        self.expert_layer = MoE(hidden_size, hidden_size, num_experts=num_of_features)
-        
-        # Observation embeddings - one for each game
-        self.observation_embeddings = nn.ModuleDict()
-        for game_name, config in game_configs.items():
-            self.observation_embeddings[game_name] = nn.Sequential(
-                nn.Linear(config.observation_dim, hidden_size),
-                nn.LayerNorm(hidden_size),
-                nn.ReLU()
-            )
-        
-        # Action embeddings - one for each game
-        self.action_embeddings = nn.ModuleDict()
-        for game_name, config in game_configs.items():
-            self.action_embeddings[game_name] = nn.Embedding(config.action_dim, hidden_size)
-        
-        # Return-to-go embedding
-        self.return_embedding = nn.Linear(1, hidden_size)
-        
-        # Timestep embedding
-        max_ep_len = max(config.max_episode_len for config in game_configs.values())
-        self.timestep_embedding = nn.Embedding(max_ep_len, hidden_size)
-        
-        # Transformer encoder
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=hidden_size,
-            nhead=n_head,
-            dim_feedforward=hidden_size * 4,
-            dropout=dropout,
-            activation="relu",
-            batch_first=True
-        )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=n_layer)
-        
-        # Prediction heads - one for each game
-        self.state_pred_heads = nn.ModuleDict()
-        self.action_pred_heads = nn.ModuleDict()
-        if self.experts:
-            self.action_experts = MoE(hidden_size, hidden_size, output_dim=self.max_action_dim, num_experts=num_of_features)
-        #self.action_experts = MoE(hidden_size)
-        for game_name, config in game_configs.items():
-            self.state_pred_heads[game_name] = nn.Linear(hidden_size, config.observation_dim)
-            self.action_pred_heads[game_name] = nn.Linear(hidden_size, config.action_dim)
-        
-        self.return_pred_head = nn.Linear(hidden_size, 1)
-        
-    def forward(self, games, states, actions, returns_to_go, timesteps, attention_mask=None):
-        batch_size, seq_length = states.shape[0], states.shape[1]
-        
-        # Get game indices
-        game_indices = torch.tensor([self.game_names.index(game) for game in games], device=DEVICE)
-        game_embs = self.game_embedding(game_indices).unsqueeze(1)  # (batch_size, 1, hidden_size)
-        
-        # Process states and actions for each game
-        state_embs = torch.zeros(batch_size, seq_length, self.hidden_size, device=DEVICE)
-        action_embs = torch.zeros(batch_size, seq_length, self.hidden_size, device=DEVICE)
-        
-        for i, game in enumerate(games):
-            obs_dim = self.game_configs[game].observation_dim
-            act_dim = self.game_configs[game].action_dim
-            # Slice to correct dimension before embedding
-            state_embs[i] = self.observation_embeddings[game](states[i, :, :obs_dim])
-            # Convert actions to long integers for embedding layer
-            action_indices = actions[i].long().squeeze(-1)
-            action_embs[i] = self.action_embeddings[game](action_indices)
-
-        # Remove extra dimension if present
-        if returns_to_go.dim() == 3 and returns_to_go.shape[-1] == 1:
-            returns_to_go = returns_to_go.squeeze(-1)
-        if timesteps.dim() == 3 and timesteps.shape[-1] == 1:
-            timesteps = timesteps.squeeze(-1)
-
-        # Return-to-go embedding
-        return_embs = self.return_embedding(returns_to_go.unsqueeze(-1))  # (batch_size, seq_length, hidden_size)
-        
-        # Timestep embedding
-        timestep_embs = self.timestep_embedding(timesteps)  # (batch_size, seq_length, hidden_size)
-
-        
-        if self.experts:
-            state_embs = self.expert_layer(state_embs)
-        # Combine all embeddings
-        combined_embs = state_embs + action_embs + return_embs + timestep_embs + game_embs  # All should be (batch_size, seq_length, hidden_size)
-        
-        # Transformer
-        if attention_mask is not None:
-            # Create padding mask for transformer
-            src_key_padding_mask = (attention_mask == 0)
-            output = self.transformer(combined_embs, src_key_padding_mask=src_key_padding_mask)
-        else:
-            output = self.transformer(combined_embs)
-        
-        # Predictions - use appropriate heads for each game
-        max_obs_dim = max(cfg.observation_dim for cfg in self.game_configs.values())
-        max_action_dim = max(cfg.action_dim for cfg in self.game_configs.values())
-        state_preds = torch.zeros(batch_size, seq_length, max_obs_dim, device=DEVICE)
-        action_preds = torch.zeros(batch_size, seq_length, max_action_dim, device=DEVICE)
-        
-        if self.experts:
-            moeaction_preds = self.action_experts(output)
-            for i, game in enumerate(games):
-                act_dim = self.game_configs[game].action_dim
-                action_preds[i, :, :act_dim] = moeaction_preds[i, :, :act_dim]
-        else:
-            for i, game in enumerate(games):
-                obs_dim = self.game_configs[game].observation_dim
-                act_dim = self.game_configs[game].action_dim
-                state_preds[i, :, :obs_dim] = self.state_pred_heads[game](output[i])
-                action_preds[i, :, :act_dim] = self.action_pred_heads[game](output[i])
-        
-        return_preds = self.return_pred_head(output)
-        
-        return state_preds, action_preds, return_preds
 
 def multi_game_collate_fn(batch):
     """
