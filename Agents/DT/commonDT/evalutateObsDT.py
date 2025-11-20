@@ -8,19 +8,22 @@ import random
 import logging
 import os
 import json
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 # import imageio
 
 from affectively.environments.solid_game_obs import SolidEnvironmentGameObs
+from affectively.environments.pirates_game_obs import PiratesEnvironmentGameObs
 from affectively.environments.base import compute_confidence_interval
-from Agents.DT.commonDT.trainObsDT import plot_metrics
+# from trainObsDT import plot_metrics
 
 # --- Configuration ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --- Evaluation (Online Rollout) ---
-def evaluate_online(env_creator, model_path, target_rtg, num_episodes=10):
+def evaluate_online(env, model_path, target_rtg, num_episodes=10, output_attentions=False):
     """Evaluates the trained model online in the environment."""
 
     logger.info(f"Starting online evaluation with target RTG: {target_rtg}")
@@ -30,7 +33,6 @@ def evaluate_online(env_creator, model_path, target_rtg, num_episodes=10):
 
     # Load model and normalization stats
     try:
-        model_config = DecisionTransformerConfig.from_pretrained(model_path)
         model = DecisionTransformerModel.from_pretrained(model_path)
         model.to(DEVICE).eval()
 
@@ -52,7 +54,7 @@ def evaluate_online(env_creator, model_path, target_rtg, num_episodes=10):
 
     # Create environment
     try:
-        env = env_creator()
+        env.reset()
     except Exception as e:
         logger.error(f"Failed to create environment: {e}")
         return None, None
@@ -63,9 +65,23 @@ def evaluate_online(env_creator, model_path, target_rtg, num_episodes=10):
     arousal, scores = [], []
 
     for ep in range(num_episodes):
+        
+        # --- DATA COLLECTION SETUP FOR THE FIRST EPISODE ---
+        if ep == 0 and output_attentions:
+            attention_history_line = {
+                "rtg": [],
+                "state": [],
+                "action": []
+            }
+            attention_history_heatmap = []
+        
         try:
             state = env.reset()
             state = np.array(state, dtype=np.float32) # Ensure numpy float32
+            if state.size > STATE_DIM: #To manage extra info in observation
+                # logger.warning(f"Initial state shape mismatch: got {state.size}, expected {STATE_DIM}. truncating.")
+                state = state[:STATE_DIM]
+                    
         except Exception as e:
             logger.error(f"Environment reset failed: {e}")
             continue # Skip episode if reset fails
@@ -108,9 +124,44 @@ def evaluate_online(env_creator, model_path, target_rtg, num_episodes=10):
                     timesteps=timesteps_tensor, # Pass the (1, K) tensor
                     attention_mask=attn_mask_tensor,
                     return_dict=True,
+                    output_attentions=output_attentions,
                 )
                 # Get logits for the last timestep prediction
                 logits = outputs.action_preds[0, -1] # Shape (concatenated_logit_dim,) e.g., (8,)
+                
+                # --- VISUALIZE ATTENTION ---
+                # # The shape will be (batch_size, num_heads, sequence_length, sequence_length)
+                # # batch_size is 1 and sequence_length is CONTEXT_LENGTH
+                # # these weights reveal how the model "looks back" at previous steps (states, actions, and returns-to-go) when making a prediction for the current step.
+                # if ep_len % 50 == 0: # Plot every 50 steps to avoid too many plots
+                #     last_layer_attention = outputs.attentions[-1] # Last layer attention Shape: (1, num_heads, K, K)
+                #     plot_attention_heatmap(last_layer_attention.squeeze(0), CONTEXT_LENGTH, ep_len)
+                
+                # --- ATTENTION ANALYSIS FOR THE FIRST EPISODE ---
+                if ep == 0 and outputs.attentions:
+                    last_layer_attention = outputs.attentions[-1] # Shape: (1, num_heads, 3*K, 3*K)
+                    
+                    # Average over all attention heads
+                    avg_attention = last_layer_attention.squeeze(0).mean(dim=0).cpu().numpy()
+                    
+                    # We want the attention row for the *current state prediction*.
+                    # The model uses the state token to predict the next action.
+                    # This token is at index (3 * K) - 2.
+                    s_last_idx = (CONTEXT_LENGTH * 3) - 2
+                    attention_row = avg_attention[s_last_idx, :]
+
+                    # The input tokens are interleaved: [R1, S1, A1, R2, S2, A2, ...]
+                    # We can sum the attention paid to each modality using slicing.
+                    sum_rtg_att = np.sum(attention_row[0::3])
+                    sum_state_att = np.sum(attention_row[1::3])
+                    sum_action_att = np.sum(attention_row[2::3])
+
+                    # Append to our history lists
+                    attention_history_line["rtg"].append(sum_rtg_att)
+                    attention_history_line["state"].append(sum_state_att)
+                    attention_history_line["action"].append(sum_action_att)
+                    attention_history_heatmap.append([sum_rtg_att, sum_state_att, sum_action_att])
+                
 
             # Sample action INDICES from the logits for each dimension
             predicted_action_indices = np.zeros(_num_action_dims, dtype=np.int64)
@@ -124,16 +175,21 @@ def evaluate_online(env_creator, model_path, target_rtg, num_episodes=10):
                 predicted_action_indices[i] = action_idx
                 # Set the corresponding one-hot bit for the next input
                 predicted_action_one_hot[start_idx + action_idx] = 1.0
+                
+
+            # logger.info(f"Predicted action: {predicted_action_indices}")
 
             # Step environment with action INDICES
             try:
-                 next_state, reward, terminated, _ = env.step(predicted_action_indices)
-                 next_state = np.array(next_state, dtype=np.float32) # Ensure numpy float32
-                 reward = float(reward) # Ensure float
-                 done = terminated
+                next_state, reward, done, _ = env.step(predicted_action_indices)
+                next_state = np.array(next_state, dtype=np.float32) # Ensure numpy float32
+                if next_state.size > STATE_DIM: #To manage extra info in observation
+                    # logger.warning(f"Initial state shape mismatch: got {state.shape}, expected {STATE_DIM}. truncating.")
+                    next_state = next_state[:STATE_DIM]
+                reward = float(reward) # Ensure float
             except Exception as e:
-                 logger.error(f"Environment step failed: {e}")
-                 done = True # End episode if step fails
+                logger.error(f"Environment step failed: {e}")
+                done = True # End episode if step fails
 
 
             # Update context buffers for the next iteration
@@ -163,15 +219,24 @@ def evaluate_online(env_creator, model_path, target_rtg, num_episodes=10):
 
         episode_returns.append(ep_return)
         episode_lengths.append(ep_len)
-        arousal.append(np.mean(env.arousal_trace))
-        scores.append(env.best_score)
-        env.best_score = 0
-        env.arousal_trace.clear()
+        arousal.append(np.mean(env.episode_arousal_trace))
+        scores.append(env.current_score)
+        
         logger.info(f"Episode {ep+1}/{num_episodes}: Return={ep_return:.2f}, Length={ep_len}, Arousal={arousal[-1]:.2f}, Score={scores[-1]:.2f}")
+        
+        if ep == 0 and output_attentions:
+            dt_name_for_plot = os.path.basename(os.path.normpath(model_path))
+            plot_episode_attention_heatmap(
+                attention_history_heatmap,
+                ep,
+                dt_name_for_plot
+            )
 
     if not episode_returns:
         logger.warning("No episodes completed successfully during evaluation.")
         return None, None
+    
+    env.close()
 
     mean_return = np.mean(episode_returns)
     std_return = np.std(episode_returns)
@@ -181,6 +246,7 @@ def evaluate_online(env_creator, model_path, target_rtg, num_episodes=10):
     logger.info(f"Mean Return: {mean_return:.2f} +/- {std_return:.2f}")
     logger.info(f"Mean Length: {mean_length:.2f}")
     logger.info("-" * 30)
+    
     return mean_return, std_return, arousal, scores
 
 def create_dummy_env():
@@ -278,6 +344,7 @@ def record_gif_episode(env_creator, model_path, target_rtg, gif_path="episode.gi
                 attention_mask=attn_mask_tensor,
                 return_dict=True,
             )
+            # Get logits for the last timestep prediction
             logits = outputs.action_preds[0, -1]
 
         predicted_action_indices = np.zeros(_num_action_dims, dtype=np.int64)
@@ -327,78 +394,151 @@ def record_gif_episode(env_creator, model_path, target_rtg, gif_path="episode.gi
     else:
         print("No valid frames were captured. GIF was not saved.")
 
+# --- Attention Visualization Functions ---
+    
+def plot_attention_heatmap(attention_weights, context_length, step_number):
+    """
+    Plots a heatmap of the attention weights for the current State token.
+    """
+    # attention_weights shape: (num_heads, 3*K, 3*K)
+    # Average over heads
+    avg_attention = attention_weights.mean(dim=0).cpu().numpy() # Shape (90, 90) if K=30
+
+    # The tokens are arranged [R1, S1, A1, R2, S2, A2, ...]
+    # We want to know what the LAST STATE token (S_K) attended to.
+    # if K=30, total tokens = 90. Indices: 0 to 89.
+    # R_30 is at index 87, S_30 is at index 88, A_30 is at index 89.
+
+    # Assuming standard full context:
+    s_last_idx = (context_length * 3) - 2 
+    
+    # Get the attention row for the last state
+    attention_row = avg_attention[s_last_idx, :]
+
+    # Reshape to (K, 3) to see attention paid to R, S, and A separately for each timestep
+    # We might need to pad or trim if the context isn't perfectly full, but let's assume it is for now.
+    try:
+        reshaped_attention = attention_row.reshape(context_length, 3)
+    except ValueError:
+         # Fallback if shape doesn't match exactly (e.g. during early episodes)
+         print(f"Debug: Attn row shape {attention_row.shape} doesn't fit ({context_length}, 3)")
+         return
+
+    plt.figure(figsize=(8, 6))
+    # Transpose so Time is on X-axis, Modality (R,S,A) is on Y-axis
+    sns.heatmap(reshaped_attention.T, cmap="viridis", cbar=True, yticklabels=["RTG", "State", "Action"])
+    plt.title(f"What did State_{step_number} attend to?")
+    plt.xlabel("Past Timesteps (Relative in Context)")
+    plt.ylabel("Modality Input")
+    plt.show()
+
+
+def plot_episode_attention_heatmap(attention_matrix, ep_num, dt_name):
+    """
+    Creates a heatmap of attention distribution over an entire episode.
+    """
+    # Convert list of lists to a numpy array and transpose it
+    # so modalities are on the y-axis and time is on the x-axis.
+    attention_data = np.array(attention_matrix).T # Shape becomes (3, episode_length)
+    
+    plt.figure(figsize=(18, 4))
+    sns.heatmap(
+        attention_data,
+        cmap="viridis",
+        yticklabels=["RTG", "State", "Action"],
+        cbar_kws={'label': 'Attention Score'}
+    )
+    plt.title(f'Attention Heatmap for CW: {CONTEXT_LENGTH} for {dt_name}')
+    plt.xlabel('Episode Timestep')
+    plt.ylabel('Input Modality')
+    plt.tight_layout()
+    plt.show()
 
 NUM_ACTIONS_PER_DIM = [3, 3, 2]  # <<< --- MUST BE SET CORRECTLY
 NUM_ACTION_DIMS = len(NUM_ACTIONS_PER_DIM)
-STATE_DIM = 81
-CONTEXT_LENGTH = 5  # K: How many steps the model sees
+STATE_DIM = 86
+CONTEXT_LENGTH = 20 # K: How many steps the model sees
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # --- Main Execution ---
 if __name__ == "__main__":
-
-    # reward_type = 'arousal'
-    # reward_type = 'score'
-    reward_type = 'blended'
     
-    data_from = 'PPO'
-    # data_from = 'Explore'
+    data_from = 'PPO' # 'PPO' or 'Explore'
     
     # Target return for evaluation
-    target_return = 7000
-    # target_return = 17
+    target_return = 100  # Adjust based on training data distribution
     
-    # name = f"{data_from}_{label}_{reward_type}_SolidObs_DT"
-    # name = f"ODT_Optimize_14k_v300"
-    # name = f"ODT_Blended_14k_v300"
-    # name = f"ODT_Arousal_14k_v300"
-    name = "testingDT_on_newAF_final"
-    
-    weight = 0.5
+    target_arousal = 1 # 1 to maximize arousal, 0 to minimize
+    period_ra = 0
+    label = 'Arousal' # 'Optimize', 'Blended', 'Arousal'
+    cluster = 0
+    run = 0
+    env_name = "pirates" # solid, pirates, or dummy for testing
+    plot_ep_attention = True # True or False for attention plotting during evaluation
+    num_episodes = 30
 
-    if weight == 0:
-        label = 'Optimize'
-    elif weight == 0.5:
-        label = 'Blended'
-    else:
-        label = 'Arousal'
+    if label == 'Optimize':
+        weight = 0
+    elif label == 'Blended':
+        weight = 0.5
+    elif label == 'Arousal':
+        weight = 1
     
     discretize=0
     
     if data_from == 'Explore':
         discretize=1
-    
-    # Set the path to the saved model artifacts
-    final_model_path = f"agents\\game_obs\\DT\\Results\\{name}"
-    # final_model_path = f"examples\\Agents\\DT\\Results\\Explore_Blended_moreTrained_DT"
-    # final_model_path = f"examples\\Agents\\DT\\Results\\preTrained\\PPO_Optimize_score_SolidObs_DT_final"
-    
-    print(f'Starting to evaluate {name}')
-    
-    def create_env():
+        
+    if plot_ep_attention:
+        num_episodes = 1  # Only need one episode for attention plotting
+        
+        
+    if env_name == "pirates":
+        env = PiratesEnvironmentGameObs(
+                    id_number=0,
+                    weight=weight,
+                    graphics=True,
+                    cluster=cluster,
+                    target_arousal=target_arousal,
+                    period_ra=period_ra,
+                    discretize=discretize
+                )
+        STATE_DIM = 386
+        NUM_ACTIONS_PER_DIM = [3, 2, 2] 
+        NUM_ACTION_DIMS = len(NUM_ACTIONS_PER_DIM)
+    elif env_name == "solid":
         env = SolidEnvironmentGameObs(
                     id_number=0,
-                    weight=0,
+                    weight=weight,
                     graphics=True,
-                    cluster=0,
-                    target_arousal=0,
-                    period_ra=0,
-                    discretize=0
+                    cluster=cluster,
+                    target_arousal=target_arousal,
+                    period_ra=period_ra,
+                    discretize=discretize
                 )
-        sideChannel = env.customSideChannel
-        env.targetSignal = np.ones
-        return env
+    elif env_name == "dummy":
+        env = create_dummy_env()
+        
+        
+    dt_name = f"DT_{env_name}_{data_from}_{label}_cluster{cluster}_run{run}_final"
+    
+    # Set the path to the saved model artifacts
+    final_model_path = f"agents\\game_obs\\DT\\Results\\{env_name}\\{dt_name}"
+    # final_model_path = f"examples\\Agents\\DT\\Results\\Explore_Blended_moreTrained_DT"
+    
+    print(f'Starting to evaluate {dt_name}')
 
     # Run evaluation
     mean_return, std_return, arousal, scores = evaluate_online(
-        env_creator=create_env,
+        env=env,
         model_path=final_model_path,
         target_rtg=target_return,
-        num_episodes=10
+        num_episodes=num_episodes,
+        output_attentions=plot_ep_attention
     )
     
     print(f"Best Score: {compute_confidence_interval(scores)}, Mean Arousal: {compute_confidence_interval(arousal)}")
-    print(f'Done evaluating {name} in {label}')
+    print(f'Done evaluating {dt_name} in {label}')
     
     # --- Record a GIF of one episode ---
     # record_gif_episode(

@@ -18,170 +18,23 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from sklearn.metrics import f1_score, accuracy_score
 import matplotlib.pyplot as plt
-import random
 
 # --- Configuration ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
-# --- 0. Custom Model ---
-class DuelingArchitecture(nn.Module):
-    def __init__(self,embed_dim,act_dim):
-        super(DuelingArchitecture,self).__init__()
-        self.fc_adv = nn.Linear(embed_dim, embed_dim)
-        self.fc_value = nn.Linear(embed_dim, embed_dim)
-        self.adv = nn.Linear(embed_dim,act_dim)
-        self.value = nn.Linear(embed_dim,1)
-    def forward(self,x):
-        x_adv = F.relu(self.fc_adv(x))
-        x_adv = self.adv(x_adv)
-        x_value = F.relu(self.fc_value(x))
-        x_value = self.value(x_value)
-        adv_average = torch.mean(x_adv,dim=2,keepdim=True)
-        return x_value + x_adv - adv_average
-
-class DecisionTransformerWithImage(nn.Module):
-    
-    def __init__(self,
-                config,
-                dueling_network:bool = True):
-        super().__init__()
-        self.embedding_dim = config.hidden_size
-        self.max_state_dim = config.state_dim
-        self.context_length = config.max_length
-        self.n_layer = config.n_layer
-        self.n_head = config.n_head
-        self.max_ep_length = config.max_ep_len
-        self.max_act_dim = config.act_dim
-        self.img_dim_x = 200
-        self.img_dim_y = 200
-
-        # Input embedding
-        self.state_encoder = nn.Linear(self.max_state_dim, self.embedding_dim)
-        self.state_encoder_image = nn.Sequential(
-            nn.Conv2d(3, 8, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(8, 32, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(32, self.embedding_dim, kernel_size=3, stride=1, padding=1))
-        self.action_encoder = nn.Linear(self.max_state_dim, self.embedding_dim)
-        #self.action_encoder = nn.Embedding(self.max_state_dim, self.embedding_dim)
-        self.rtg_encoder = nn.Linear(1, self.embedding_dim)
-        self.timestep_encoder = nn.Embedding(config.max_ep_len, self.embedding_dim)
-        self.embed_ln = nn.LayerNorm(self.embedding_dim)
-
-        # Transformer
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=self.embedding_dim,
-            nhead=self.n_head,
-            dim_feedforward=4 * self.embedding_dim,
-            dropout=0.1,
-            activation='relu',
-            batch_first=True
-        )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=self.n_layer)
-        self.predict_ln = nn.LayerNorm(self.embedding_dim)
-        # Prediction heads
-        self.action_heads = DuelingArchitecture(self.embedding_dim, 400)
-        #self.action_heads = nn.ModuleList({
-        #str(gid): self._create_action_head(gconf, dueling_network)
-        #for gconf in config.action_discrete_cardinalities
-        #})
-
-    def _create_action_head(self, game_config, dueling_network:bool = False):
-        head_layers = nn.ModuleDict()
-        if not dueling_network:
-            head_layers['discrete'] = nn.ModuleList([
-            nn.Linear(self.embedding_dim, card) for card in game_config.action_discrete_cardinalities
-            ])
-        #if not dueling_network:
-        #    if game_config.action_type in ['continuous', 'mixed']:
-        #        head_layers['continuous'] = nn.Linear(self.embedding_dim, game_config.action_continuous_dim)
-        #    if game_config.action_type in ['discrete', 'mixed']:
-        #        head_layers['discrete'] = nn.ModuleList([
-        #            nn.Linear(self.embedding_dim, card) for card in game_config.action_discrete_cardinalities
-        #        ])
-        #else:
-        #    if game_config.action_type in ['continuous', 'mixed']:
-        #        head_layers['continuous'] = DuelingArchitecture(self.embedding_dim, game_config.action_continuous_dim)
-        #    if game_config.action_type in ['discrete', 'mixed']:
-        #        head_layers['discrete'] = nn.ModuleList([
-        #            DuelingArchitecture(self.embedding_dim, card) for card in game_config.action_discrete_cardinalities
-        #        ])
-
-        return head_layers
-
-    def _rescale_image(self, img:np.ndarray) -> torch.Tensor:
-        """ Rescale images to accepted resolution"""
-        if img.shape[2] != self.img_dim_x or img.shape[3] != self.img_dim_y:
-            resized_images = np.zeros((img.shape[0], img.shape[1], self.img_dim_x, self.img_dim_y, 3), dtype=np.int64)
-            for i in range(img.shape[0]):
-                for j in range(img.shape[1]):
-                    resized_images[j, i] = cv2.resize(img[i, j], (self.img_dim_x, self.img_dim_y))
-            
-            return torch.from_numpy(resized_images).float().permute(0, 1, 4, 2, 3) / 255
-        return torch.from_numpy(img).float().permute(0, 1, 4, 2, 3) / 255
-
-
-    def forward(self, states:torch.Tensor, actions:torch.Tensor, returns_to_go:torch.Tensor, timesteps:torch.Tensor, attention_mask, return_dict, game_ids=None, img:bool = False):
-
-        batch_size, seq_len = states.shape[0], self.context_length
-        print("State size:", states.size())
-        print("Action size:", actions.size())
-        print(actions[0][0])
-        
-        # Embed all inputs
-        if img:
-            states = self._rescale_image(states)
-            state_embeds = self.state_encoder_image(states)
-        else:
-            state_embeds = self.state_encoder(states)
-        if actions.size(-1) != self.max_act_dim:
-            actions = F.pad(actions,(0, self.max_act_dim-actions.size(-1)))
-        action_embeds = self.action_encoder(actions)
-        rtg_embeds = self.rtg_encoder(returns_to_go)
-        time_embeds = self.timestep_encoder(timesteps)
-
-        state_embeds += time_embeds
-        action_embeds += time_embeds
-        rtg_embeds += time_embeds
-
-        # Assemble sequence
-        stacked_inputs = torch.stack((rtg_embeds, state_embeds, action_embeds), dim=1)
-        stacked_inputs = stacked_inputs.permute(0, 2, 1, 3).reshape(batch_size, 3 * seq_len, self.embedding_dim)
-        stacked_inputs = self.embed_ln(stacked_inputs)
-
-        # Create attention mask
-        stacked_mask = torch.stack((attention_mask, attention_mask, attention_mask), dim=1)
-        stacked_mask = stacked_mask.permute(0, 2, 1).reshape(batch_size, 3 * seq_len)
-        inverted_attention_mask = stacked_mask == 0
-
-        # Transformer forward pass
-        x = self.transformer(stacked_inputs, src_key_padding_mask=inverted_attention_mask)
-        x = self.predict_ln(x)
-
-        # Reshape and get predictions
-        x = x.reshape(batch_size, seq_len, 3, self.embedding_dim).permute(0, 2, 1, 3)
-        state_preds = x[:,1]  # Predictions from state representations
-
-        # Game-specific predictions
-        #all_predictions = {}
-        #for head_module in self.action_heads.items():
-        #    game_preds = {}
-        #    if 'continuous' in head_module:
-        #        game_preds['continuous'] = head_module['continuous'](state_preds)
-        #    if 'discrete' in head_module:
-        #        game_preds['discrete'] = [head(state_preds) for head in head_module['discrete']]
-        #    all_predictions[gid] = game_preds
-
-        return self.he
-
-
+@dataclass
+class GameConfig:
+    name: str
+    observation_dim: int
+    action_dim: int
+    action_space: List[int]
+    max_episode_len: int
+    cumulative_reward: bool
 
 # --- 1. Data Loading and Preprocessing ---
 
-def load_data(pickle_paths,
+def load_data(pickle_path,
                    cumulative_rewards_in_dataset=False):
     """
     Loads dataset from a pickle file generated by the user's PPO script.
@@ -205,144 +58,136 @@ def load_data(pickle_paths,
             'done': bool
         }
     """
+    logger.info(f"Loading dataset from: {pickle_path}")
+    try:
+        with open(pickle_path, 'rb') as f:
+            dataset = pickle.load(f)
+    except FileNotFoundError:
+        logger.error(f"Dataset file not found at: {pickle_path}")
+        raise
+    except Exception as e:
+        logger.error(f"Error loading pickle file: {e}")
+        raise
+
+    # Extract data lists (List of Lists)
+    observations_list = dataset['observations']
+    actions_list = dataset['actions']
+    rewards_list = dataset['rewards'] # This might be cumulative or per-step
+    dones_list = dataset['dones']
+
+    num_episodes = len(observations_list)
+    if not (len(actions_list) == num_episodes and len(rewards_list) == num_episodes and len(dones_list) == num_episodes):
+        logger.error("Dataset lists (observations, actions, rewards, dones) have inconsistent lengths.")
+        raise ValueError("Inconsistent number of episodes in dataset file.")
+
+    # Add logic to choose the best n trajectories based on total reward
+    observations_list, actions_list, rewards_list, dones_list = choose_best_episodes(observations_list, actions_list, rewards_list, 
+                                                                                     dones_list, cumulative_rewards_in_dataset=cumulative_rewards_in_dataset)
+
     processed_episodes = []
     all_final_scores = [] # To calculate average return from data
-    for pickle_path in pickle_paths:
-        logger.info(f"Loading dataset from: {pickle_path}")
-        try:
-            with open(pickle_path, 'rb') as f:
-                dataset = pickle.load(f)
-        except FileNotFoundError:
-            logger.error(f"Dataset file not found at: {pickle_path}")
-            raise
-        except Exception as e:
-            logger.error(f"Error loading pickle file: {e}")
-            raise
 
-        # Extract data lists (List of Lists)
-        observations_list = dataset['observations']
-        actions_list = dataset['actions']
-        rewards_list = dataset['rewards'] # This might be cumulative or per-step
-        dones_list = dataset['dones']
+    num_episodes = len(observations_list) # Update to the filtered number of episodes
+    
+    logger.info(f"Processing {num_episodes} episodes...")
+    for i in range(num_episodes):
+        ep_obs = observations_list[i]
+        ep_act = actions_list[i]
+        ep_rew = rewards_list[i] # Raw rewards from file
+        ep_done = dones_list[i]
 
-        num_episodes = len(observations_list)
-        if not (len(actions_list) == num_episodes and len(rewards_list) == num_episodes and len(dones_list) == num_episodes):
-            logger.error("Dataset lists (observations, actions, rewards, dones) have inconsistent lengths.")
-            raise ValueError("Inconsistent number of episodes in dataset file.")
+        ep_len = len(ep_obs)
+        if not (len(ep_act) == ep_len and len(ep_rew) == ep_len and len(ep_done) == ep_len):
+            logger.warning(f"Episode {i} has inconsistent lengths between obs/act/rew/done. Skipping. Lengths: O={len(ep_obs)}, A={len(ep_act)}, R={len(ep_rew)}, D={len(ep_done)}")
+            continue
+        if ep_len == 0:
+            logger.warning(f"Episode {i} is empty. Skipping.")
+            continue
 
-        # Add logic to choose the best n trajectories based on total reward
-        observations_list, actions_list, rewards_list, dones_list = choose_best_episodes(observations_list, actions_list, rewards_list, 
-                                                                                         dones_list, cumulative_rewards_in_dataset=cumulative_rewards_in_dataset)
+        episode_data = []
+        current_episode_total_reward = 0.0
+        for t in range(ep_len):
+             # --- Input Validation and Correction ---
+            # Ensure observation is numpy array of correct shape and type
+            try:
+                observation = np.array(ep_obs[t], dtype=np.float32)
+                if observation.shape != (STATE_DIM,):
+                     raise ValueError(f"Observation shape mismatch: expected ({STATE_DIM},), got {observation.shape}")
+            except Exception as e:
+                logger.warning(f"Skipping step {t} in episode {i} due to invalid observation: {e}")
+                continue # Skip this step if observation is bad
 
+            # Ensure action is numpy array of correct shape, type, and value range
+            try:
+                action = np.array(ep_act[t], dtype=np.int64)
+                if action.shape != (NUM_ACTION_DIMS,):
+                    raise ValueError(f"Action shape mismatch: expected ({NUM_ACTION_DIMS},), got {action.shape}")
+                # Check if action values are within bounds
+                for dim_idx, act_val in enumerate(action):
+                    if not (0 <= act_val < NUM_ACTIONS_PER_DIM[dim_idx]):
+                        raise ValueError(f"Action value out of bounds in dim {dim_idx}: got {act_val}, expected < {NUM_ACTIONS_PER_DIM[dim_idx]}")
+            except Exception as e:
+                 logger.warning(f"Skipping step {t} in episode {i} due to invalid action: {e}")
+                 continue # Skip this step if action is bad
 
+            done = bool(ep_done[t])
 
-        num_episodes = len(observations_list) # Update to the filtered number of episodes
+            # --- Calculate PER-STEP reward ---
+            step_reward = 0.0
+            raw_reward_t = ep_rew[t] # The value stored at this step in the file
 
-        logger.info(f"Processing {num_episodes} episodes...")
-        for i in range(num_episodes):
-            ep_obs = observations_list[i]
-            ep_act = actions_list[i]
-            ep_rew = rewards_list[i] # Raw rewards from file
-            ep_done = dones_list[i]
-
-            ep_len = len(ep_obs)
-            if not (len(ep_act) == ep_len and len(ep_rew) == ep_len and len(ep_done) == ep_len):
-                logger.warning(f"Episode {i} has inconsistent lengths between obs/act/rew/done. Skipping. Lengths: O={len(ep_obs)}, A={len(ep_act)}, R={len(ep_rew)}, D={len(ep_done)}")
-                continue
-            if ep_len == 0:
-                logger.warning(f"Episode {i} is empty. Skipping.")
-                continue
-
-            episode_data = []
-            current_episode_total_reward = 0.0
-            for t in range(ep_len):
-                 # --- Input Validation and Correction ---
-                # Ensure observation is numpy array of correct shape and type
-                try:
-                    observation = np.array(ep_obs[t], dtype=np.float32)
-                    if observation.shape != (STATE_DIM,):
-                        if observation.shape[0] < STATE_DIM:
-                            observation = pad_dimensions(observation,STATE_DIM)
-                        else:
-                            raise ValueError(f"Observation shape mismatch: expected ({STATE_DIM},), got {observation.shape}")
-                except Exception as e:
-                    logger.warning(f"Skipping step {t} in episode {i} due to invalid observation: {e}")
-                    continue # Skip this step if observation is bad
-
-                # Ensure action is numpy array of correct shape, type, and value range
-                try:
-                    action = np.array(ep_act[t], dtype=np.int64)
-                    if action.shape != (NUM_ACTION_DIMS,):
-                        if action.shape[0] < NUM_ACTION_DIMS:
-                            action = pad_dimensions(action, NUM_ACTION_DIMS)
-                        else:
-                            raise ValueError(f"Action shape mismatch: expected ({NUM_ACTION_DIMS},), got {action.shape}")
-                    # Check if action values are within bounds
-                    for dim_idx, act_val in enumerate(action):
-                        if not (-100 <= act_val < NUM_ACTIONS_PER_DIM[dim_idx]):
-                            raise ValueError(f"Action value out of bounds in dim {dim_idx}: got {act_val}, expected < {NUM_ACTIONS_PER_DIM[dim_idx]}")
-                except Exception as e:
-                     logger.warning(f"Skipping step {t} in episode {i} due to invalid action: {e}")
-                     continue # Skip this step if action is bad
-
-                done = bool(ep_done[t])
-
-                # --- Calculate PER-STEP reward ---
-                step_reward = 0.0
-                raw_reward_t = ep_rew[t] # The value stored at this step in the file
-
-                if cumulative_rewards_in_dataset:
-                    if t == 0:
-                        step_reward = float(raw_reward_t) # First step's reward is the first cumulative value
-                    else:
-                        # Per-step reward is diff between current and previous cumulative score
-                        raw_reward_prev = ep_rew[t-1]
-                        # Handle potential type issues during subtraction
-                        try:
-                            step_reward = float(raw_reward_t) - float(raw_reward_prev)
-                        except (TypeError, ValueError) as e:
-                             logger.warning(f"Could not calculate step reward at step {t} in episode {i} due to type issue: {e}. Setting reward to 0.")
-                             step_reward = 0.0
+            if cumulative_rewards_in_dataset:
+                if t == 0:
+                    step_reward = float(raw_reward_t) # First step's reward is the first cumulative value
                 else:
-                    # If dataset stores per-step rewards directly
+                    # Per-step reward is diff between current and previous cumulative score
+                    raw_reward_prev = ep_rew[t-1]
+                    # Handle potential type issues during subtraction
                     try:
-                        step_reward = float(raw_reward_t)
+                        step_reward = float(raw_reward_t) - float(raw_reward_prev)
                     except (TypeError, ValueError) as e:
-                        logger.warning(f"Could not parse step reward at step {t} in episode {i} due to type issue: {e}. Setting reward to 0.")
-                        step_reward = 0.0
-
-
-                current_episode_total_reward += step_reward
-
-                # Append the transition with the calculated *per-step* reward
-                episode_data.append({
-                    'observation': observation,
-                    'action': action, # Store the original integer action indices
-                    'reward': step_reward,
-                    'done': done
-                })
-            # --- End of episode loop ---
-
-            # Only add episode if it contains valid data
-            if episode_data:
-                processed_episodes.append(episode_data)
-                all_final_scores.append(current_episode_total_reward) # Store the calculated total reward
+                         logger.warning(f"Could not calculate step reward at step {t} in episode {i} due to type issue: {e}. Setting reward to 0.")
+                         step_reward = 0.0
             else:
-                 logger.warning(f"Episode {i} resulted in no valid steps after cleaning. Skipping.")
+                # If dataset stores per-step rewards directly
+                try:
+                    step_reward = float(raw_reward_t)
+                except (TypeError, ValueError) as e:
+                    logger.warning(f"Could not parse step reward at step {t} in episode {i} due to type issue: {e}. Setting reward to 0.")
+                    step_reward = 0.0
 
-        # --- End of all episodes loop ---
 
-        if not processed_episodes:
-            logger.error("No valid episodes found after processing.")
-            raise ValueError("No episodes processed. Check dataset integrity and input validation steps.")
+            current_episode_total_reward += step_reward
 
-        avg_return = np.mean(all_final_scores) if all_final_scores else 0
-        max_return = np.max(all_final_scores) if all_final_scores else 0
-        logger.info(f"Loaded and processed {len(processed_episodes)} episodes.")
-        logger.info(f"Calculated Average Episode Return from data: {avg_return:.2f}")
-        logger.info(f"Calculated Max Episode Return from data: {max_return:.2f}")
-        logger.info(f"Suggest using TARGET_RETURN around {avg_return:.2f} for evaluation.")
-    random.shuffle(processed_episodes)
+            # Append the transition with the calculated *per-step* reward
+            episode_data.append({
+                'observation': observation,
+                'action': action, # Store the original integer action indices
+                'reward': step_reward,
+                'done': done
+            })
+        # --- End of episode loop ---
+
+        # Only add episode if it contains valid data
+        if episode_data:
+            processed_episodes.append(episode_data)
+            all_final_scores.append(current_episode_total_reward) # Store the calculated total reward
+        else:
+             logger.warning(f"Episode {i} resulted in no valid steps after cleaning. Skipping.")
+
+    # --- End of all episodes loop ---
+
+    if not processed_episodes:
+        logger.error("No valid episodes found after processing.")
+        raise ValueError("No episodes processed. Check dataset integrity and input validation steps.")
+
+    avg_return = np.mean(all_final_scores) if all_final_scores else 0
+    max_return = np.max(all_final_scores) if all_final_scores else 0
+    logger.info(f"Loaded and processed {len(processed_episodes)} episodes.")
+    logger.info(f"Calculated Average Episode Return from data: {avg_return:.2f}")
+    logger.info(f"Calculated Max Episode Return from data: {max_return:.2f}")
+    logger.info(f"Suggest using TARGET_RETURN around {avg_return:.2f} for evaluation.")
+
     return processed_episodes
 
 
@@ -440,9 +285,6 @@ def choose_best_episodes(observations_list, actions_list, rewards_list, dones_li
     # Calculate the total rewards for each episode
     # Calculate total rewards for each episode
     total_rewards = []
-    rewards_list = np.array(rewards_list)
-    B,T = rewards_list.shape[0], rewards_list.shape[1]
-    rewards_list = rewards_list.reshape(B,T)
     for rewards in rewards_list:
         if cumulative_rewards_in_dataset:
             # If rewards are cumulative, the last reward in the list is the total reward
@@ -519,8 +361,6 @@ class MultiDiscreteDecisionTransformerTrainer(Trainer):
 
         # Keep original action INDICES (long tensor) for loss calculation
         original_actions_long = inputs["actions"] # Shape: (batch, seq_len, num_action_dims)
-        original_actions_long_mask = (original_actions_long != -100)
-        original_actions_long[~original_actions_long_mask] = 0
 
         # --- Create concatenated one-hot actions for MODEL INPUT ---
         batch_size, seq_len, _ = original_actions_long.shape
@@ -549,7 +389,7 @@ class MultiDiscreteDecisionTransformerTrainer(Trainer):
             return_dict=True,
         )
 
-        action_preds = outputs#.action_preds # Logits output by the model
+        action_preds = outputs.action_preds # Logits output by the model
 
         # --- Align Predictions and Targets for Loss ---
         act_dim = action_preds.shape[-1]
@@ -669,7 +509,7 @@ class MultiDiscreteDecisionTransformerTrainer(Trainer):
 
             # Labels: What should we compare against? For sequence prediction like DT,
             # the 'labels' are typically the actions we are trying to predict at each step.
-            # In our case, the loss compares predictions at step `t` with actions `a_t`.
+            # the loss compares predictions at step `t` with actions `a_t`.
             labels = original_actions_long # Shape: (batch, seq_len, num_action_dims)
 
         # Detach tensors before returning, standard practice in prediction_step
@@ -686,7 +526,7 @@ class MultiDiscreteDecisionTransformerTrainer(Trainer):
 # --- 4. Training and compute metrics function ---
 
 def train(pickle_path, cumulative_rewards_in_dataset=False, model_name='decision-transformer', 
-          training_args=None, model_dir=None):
+          training_args=None, model_dir=None, dt_config=None):
 
     # 1. Load and Process Data
     raw_episodes = load_data(pickle_path, cumulative_rewards_in_dataset)
@@ -720,35 +560,17 @@ def train(pickle_path, cumulative_rewards_in_dataset=False, model_name='decision
 
     max_ep_len = max(max_ep_len_train, max_ep_len_eval) if max_ep_len_eval is not None else max_ep_len_train
     if max_ep_len == 0:
-        max_ep_len = 500 # Provide a sensible default if no episodes were processed
-        logger.warning(f"Max episode length was 0, setting to default: {max_ep_len}")
+        raise ValueError("Maximum episode length calculated is zero. Check data processing.")
 
 
     train_dataset = DecisionTransformerDataset(train_sequences)
     eval_dataset = DecisionTransformerDataset(eval_sequences) if eval_sequences else None # Handle empty eval
 
     # 2. Configure Model
-    # act_dim is the size of the concatenated one-hot action vector
-    concatenated_action_dim = sum(NUM_ACTIONS_PER_DIM) # 3 + 3 + 2 = 8
-
-    config = DecisionTransformerConfig(
-        state_dim=STATE_DIM,
-        act_dim=concatenated_action_dim, # Size of the input action embedding (e.g., 8)
-        hidden_size=128,
-        n_layer=3,
-        n_head=4,
-        activation_function="relu",
-        dropout=0.1,
-        n_inner=None,
-        max_length=CONTEXT_LENGTH,
-        max_ep_len=max_ep_len, # Crucial for position embeddings
-        action_tanh=False, # Should be False for discrete/one-hot actions
-        action_discrete_cardinalities = concatenated_action_dim,
-        action_continuous_dim = 0,
-
-    )
-    #model = DecisionTransformerModel(config)
-    model = DecisionTransformerWithImage(config=config)
+    dt_config.max_ep_len = max_ep_len
+    if (dt_config is None) or (dt_config.max_ep_len == 0):
+        raise ValueError("dt_config must be provided to configure the Decision Transformer model.")
+    model = DecisionTransformerModel(dt_config)
     model.to(DEVICE)
 
     collator = DecisionTransformerDataCollator()
@@ -768,7 +590,7 @@ def train(pickle_path, cumulative_rewards_in_dataset=False, model_name='decision
     trainer.train()
 
     # 5. Save final model
-    final_model_path = os.path.join(model_dir, "Results", f"{model_name}_final")
+    final_model_path = final_model_path = os.path.join(model_dir, f"{model_name}_final")
     trainer.save_model(final_model_path)
 
     # Save normalization stats
@@ -880,78 +702,75 @@ def plot_metrics(log_history, output_dir):
     plt.show()
     logger.info(f"Training metrics plot saved to {plot_path}")
 
-def pad_dimensions(input_vector, dims):
-    return np.pad(input_vector, (0,dims-input_vector.shape[0]), mode="constant", constant_values=-100)
-
 # --- Constants and Hyperparameters ---
 NUM_ACTIONS_PER_DIM = [3, 3, 2]  # Action space for SolidGame environment
 NUM_ACTION_DIMS = len(NUM_ACTIONS_PER_DIM)
-STATE_DIM = 81 # State dimension for SolidGame environment 54 continuous 7 discrete
-CONTEXT_LENGTH = 5  # K: How many steps the model sees
-# TARGET_RETURN = 8.71 # Target return for evaluation
+STATE_DIM = 81 # Solid 81, Pirates 381
+CONTEXT_LENGTH = 20  # K: How many steps the model sees
 PICK_BEST = 100
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-# # Root path for server
-# ROOT_PATH = os.path.join(os.sep, "home", "", "Affectively-Framework")
 
 # --- Main Execution ---
 if __name__ == "__main__":
 
-    weight = 0
-    # reward_type = 'arousal'
-    reward_type = 'score'
-    # reward_type = 'blended'
+    label = 'Arousal' # 'Optimize', 'Blended', 'Arousal'
+    env = "pirates" # solid or pirates
+    cluster = 0 # 0, 1, 2, 3, 4
+    run = 0
     
     data_from = 'PPO'
     # data_from = 'Explore'
     
-    # running_on_server = True
-    running_on_server = False
-
-    if weight == 0:
-        label = 'Optimize'
-    elif weight == 0.5:
-        label = 'Blended'
-    else:
-        label = 'Arousal'
+    running_on_server = True # True if running on server, False if local
+    
+    epochs = 50
+    
+    if env == "solid":
+        STATE_DIM = 86
+        NUM_ACTIONS_PER_DIM = [3, 3, 2] 
+        NUM_ACTION_DIMS = len(NUM_ACTIONS_PER_DIM)
+    elif env == "pirates":
+        STATE_DIM = 386
+        NUM_ACTIONS_PER_DIM = [3, 2, 2] 
+        NUM_ACTION_DIMS = len(NUM_ACTIONS_PER_DIM)
 
     # --- CHOOSE DATASET ---
-    # Set cumulative_rewards_in_dataset=True if 'rewards' is cumulative score
-    # Set cumulative_rewards_in_dataset=False if 'rewards' is per-step reward
-    CUMULATIVE_REWARDS = True if reward_type == 'score' else False
+    # Set cumulative_rewards=True if 'rewards' is cumulative score
+    # Set cumulative_rewardst=False if 'rewards' is per-step reward
+    cumulative_rewards = False
     
-    DIR_PATH = os.path.join("agents", "game_obs", "DT")
-    dataset_path = os.path.join("Random", f"solid_test_dataset.pkl")
+    dir_path = os.path.join("agents", "game_obs", "DT")
     
-    for dataset_path in dataset_paths:
-        if running_on_server:
-            dataset_path = os.path.join(ROOT_PATH, "examples", "Agents", data_from, "datasets", f"{data_from}_{label}_{reward_type}_SolidObs_dataset.pkl")
-            DIR_PATH = os.path.join(ROOT_PATH, "examples", "Agents", "DT")
-            # dataset_path = os.path.join(ROOT_PATH, "examples", "Agents", data_from, "datasets", f"testing_dataset.pkl")
+    if running_on_server:
+        dir_path = os.path.join(os.sep, "home", "eser22eo", dir_path)
+    
+    model_dir = os.path.join(dir_path, "Results", f"{env}")
+    dataset_path = os.path.join(dir_path, "Datasets", f"{env}", f"{env}_{data_from}_{label}_Cluster{cluster}_Run{run}_dataset.pkl")
+    
+    load_data(dataset_path, cumulative_rewards_in_dataset=cumulative_rewards)
+    
+    # Verify that paths are correct
+    if not os.path.exists(dataset_path):
+        logger.error(f"Dataset directory not found at: {dataset_path}")
+        raise SystemExit(f"Dataset directory not found at: {dataset_path}")
+    if not os.path.exists(dir_path):
+        logger.error(f"Directory not found at: {dir_path}")
+        raise SystemExit(f"Directory not found at: {dir_path}")
 
-        # Verify that paths are correct
-        if not os.path.exists(dataset_path):
-            logger.error(f"Dataset directory not found at: {dataset_path}")
-            raise SystemExit(f"Dataset directory not found at: {dataset_path}")
-        if not os.path.exists(DIR_PATH):
-            logger.error(f"Directory not found at: {DIR_PATH}")
-            raise SystemExit(f"Directory not found at: {DIR_PATH}")
-
     
-    # dt_name = f"{data_from}_{label}_{reward_type}_moreTrained_DT"
-    dt_name = f"testingDT_on_newAF"
+    dt_name = f"DT_{env}_{data_from}_{label}_cluster{cluster}_run{run}"
     
     # 3. Set up Trainer
     training_args = TrainingArguments(
-        output_dir=os.path.join(DIR_PATH, "output", f"{dt_name}_output"),
+        output_dir=os.path.join(dir_path, "output", f"{dt_name}_output"),
         overwrite_output_dir=True,
-        num_train_epochs=30,
+        num_train_epochs=epochs,
         per_device_train_batch_size=32,
         per_device_eval_batch_size=32,
         learning_rate=1e-4,
         weight_decay=1e-4,
         warmup_ratio=0.1,
-        logging_dir=os.path.join(DIR_PATH, "logs", f"{dt_name}_logs"),
+        logging_dir=os.path.join(dir_path, "logs", f"{dt_name}_logs"),
         logging_steps=100,
         save_strategy="steps",
         save_steps=500,
@@ -965,22 +784,36 @@ if __name__ == "__main__":
         greater_is_better=False,
         remove_unused_columns=False, # Important for custom compute_loss
     )
+    
+    dt_config = DecisionTransformerConfig(
+        state_dim=STATE_DIM,
+        act_dim=sum(NUM_ACTIONS_PER_DIM), # Size of the input action embedding (the concatenated one-hot action vector)
+        hidden_size=128,
+        n_layer=3,
+        n_head=4,
+        activation_function="relu",
+        dropout=0.1,
+        n_inner=None,
+        max_length=CONTEXT_LENGTH,
+        max_ep_len=0, # Crucial for position embeddings, calculated and updated during training
+        action_tanh=False, # Should be False for discrete/one-hot actions
+    )
 
     logger.info(f"Traning: {dt_name} on {dataset_path}")
 
     # Train the model
-    trained_model, s_mean, s_std, m_ep_len, trainer = train(pickle_path=dataset_paths, cumulative_rewards_in_dataset=CUMULATIVE_REWARDS, 
-                                                            training_args=training_args, model_name=dt_name, model_dir=DIR_PATH)
+    trained_model, s_mean, s_std, m_ep_len, trainer = train(pickle_path=dataset_path, cumulative_rewards_in_dataset=cumulative_rewards, 
+                                                            training_args=training_args, model_name=dt_name, model_dir=model_dir, dt_config=dt_config)
     
     logger.info(f"Model {dt_name} trained")
     # print(f"State Mean: {s_mean}, State Std: {s_std}, Max Episode Length: {m_ep_len}")
     
     # Save trainer.state.log_history to a JSON file
-    log_history_path = os.path.join(DIR_PATH, "Results", f"{dt_name}_final", "log_history.json")
+    log_history_path = os.path.join(dir_path, "Results", f"{env}", f"{dt_name}_final", "log_history.json")
     with open(log_history_path, "w") as json_file:
         json.dump(trainer.state.log_history, json_file, indent=4)
 
     logger.info(f"Trainer log history saved to {log_history_path}")
     
-    model_dir = os.path.join(DIR_PATH, "Results", f"{dt_name}_final")
+    # model_dir = os.path.join(DIR_PATH, "Results", f"{env}", f"{dt_name}_final")
     # plot_metrics(trainer.state.log_history, model_dir)
